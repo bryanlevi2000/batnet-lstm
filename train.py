@@ -1,4 +1,3 @@
-# train.py
 from pathlib import Path
 import csv
 
@@ -18,7 +17,10 @@ from dataset import (
 
 from model import LSTMClassifier
 
-from preprocess import fit_training_normalizer
+from preprocess import (
+    fit_training_normalizer,
+    DEFAULT_CLASS_FILTER_CONFIG
+)
 
 
 # ============================================================
@@ -62,18 +64,10 @@ def compute_loss(
         num_classes
     )
 
-    # --------------------------------------------------------
-    # Final loss
-    # --------------------------------------------------------
-
     final_loss = criterion(
         final_logits,
         binary_targets
     )
-
-    # --------------------------------------------------------
-    # Target replication loss
-    # --------------------------------------------------------
 
     step_loss = torch.zeros(
         (),
@@ -107,10 +101,6 @@ def compute_loss(
 
     if num_valid_predictions > 0:
         step_loss /= num_valid_predictions
-
-    # --------------------------------------------------------
-    # Combined loss
-    # --------------------------------------------------------
 
     loss = (
         config.TARGET_REPLICATION_ALPHA * step_loss
@@ -228,6 +218,7 @@ def write_validation_files(validation_samples):
         f"{output_path}"
     )
 
+
 # ============================================================
 # TRAIN
 # ============================================================
@@ -243,6 +234,26 @@ def train():
     torch.manual_seed(
         config.RANDOM_SEED
     )
+
+    # ========================================================
+    # CLASS-SPECIFIC PULSE FILTER CONFIG
+    # ========================================================
+
+    class_filter_config_path = (
+        DEFAULT_CLASS_FILTER_CONFIG
+    )
+
+    print(
+        f"Using class-specific pulse filter:\n"
+        f"{class_filter_config_path}"
+    )
+
+    if not class_filter_config_path.exists():
+
+        raise FileNotFoundError(
+            "Class-specific pulse filter JSON was not found:\n"
+            f"{class_filter_config_path}"
+        )
 
     # ========================================================
     # DISCOVER WAV FILES
@@ -295,9 +306,14 @@ def train():
 
     # ========================================================
     # FIT NORMALIZATION ON TRAINING DATA ONLY
+    #
+    # The class-specific pulse filter is applied before the
+    # statistics are calculated.
     # ========================================================
 
-    print("\nCalculating training normalization statistics...")
+    print(
+        "\nCalculating training normalization statistics..."
+    )
 
     training_wav_paths = [
         path
@@ -305,7 +321,10 @@ def train():
     ]
 
     fit_training_normalizer(
-        training_wav_paths
+        training_wav_paths,
+        class_filter_config_path=(
+            class_filter_config_path
+        )
     )
 
     print(
@@ -319,7 +338,10 @@ def train():
 
     train_dataset = PulseDataset(
         samples=train_samples,
-        normalization_path=config.STATS_FILE
+        normalization_path=config.STATS_FILE,
+        class_filter_config_path=(
+            class_filter_config_path
+        )
     )
 
     validation_dataset = None
@@ -328,7 +350,10 @@ def train():
 
         validation_dataset = PulseDataset(
             samples=validation_samples,
-            normalization_path=config.STATS_FILE
+            normalization_path=config.STATS_FILE,
+            class_filter_config_path=(
+                class_filter_config_path
+            )
         )
 
     # ========================================================
@@ -344,9 +369,6 @@ def train():
     if config.NUM_WORKERS > 0:
 
         loader_kwargs["persistent_workers"] = True
-
-        # Controls how many WAV results each worker can have
-        # prepared ahead of time.
         loader_kwargs["prefetch_factor"] = 2
 
     train_loader = DataLoader(
@@ -571,3 +593,4 @@ def train():
 
 if __name__ == "__main__":
     train()
+    

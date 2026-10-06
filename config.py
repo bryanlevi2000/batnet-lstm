@@ -4,8 +4,8 @@
 # ============================================================
 # INPUT / OUTPUT
 # ============================================================
-TRAIN_DIR = r"C:\Users\Students\Downloads\081126V1\1_Train"
-TEST_DIR = r"E:\CERL\west_point_mistnet_2019"
+TRAIN_DIR = r"path\to\train\directory"
+TEST_DIR = r"path\to\test\directory"
 
 # ============================================================
 # DENOISING
@@ -62,7 +62,7 @@ PCHIP_TIME_INTERVAL = 100  # microseconds
 # NORMALIZATION
 # ============================================================
 COLUMNS = ["freq_hz", "amplitude", "slope"] # options are slope, freq_hz, amplitude, position
-STATS_FILE = r"C:\Users\Students\Desktop\Working\test\normalization_stats.json"
+STATS_FILE = r"path\to\normalization_stats.json"
 
 # ============================================================
 # COMPUTER WORKLOAD CONFIGURATION

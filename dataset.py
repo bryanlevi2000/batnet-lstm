@@ -1,4 +1,3 @@
-# dataset.py
 from pathlib import Path
 import random
 
@@ -7,7 +6,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
 
 import config
-from preprocess import preprocess_wav
+from preprocess import preprocess_training_wav
 
 
 # ============================================================
@@ -122,25 +121,27 @@ class PulseDataset(IterableDataset):
     """
     Parallel WAV-level preprocessing dataset.
 
+    The dataset uses the TRAINING/VALIDATION preprocessing path,
+    which includes the class-specific pulse filter.
+
     Each worker processes WAV files independently, but returns
-    ALL pulses from each WAV as one item.
-
-    Pulse-level shuffling is NOT performed here.
-
-    The main process performs the global pulse-level shuffle
-    after all worker outputs have been merged by DataLoader.
+    ALL accepted pulses from each WAV as one item.
     """
 
     def __init__(
         self,
         samples,
-        normalization_path
+        normalization_path,
+        class_filter_config_path=None
     ):
 
         super().__init__()
 
         self.samples = list(samples)
         self.normalization_path = normalization_path
+        self.class_filter_config_path = (
+            class_filter_config_path
+        )
 
     def __iter__(self):
 
@@ -151,9 +152,6 @@ class PulseDataset(IterableDataset):
         # ----------------------------------------------------
 
         if worker_info is None:
-
-            worker_id = 0
-            num_workers = 1
 
             worker_samples = self.samples
 
@@ -172,10 +170,22 @@ class PulseDataset(IterableDataset):
 
         for wav_path, label in worker_samples:
 
-            tensors = preprocess_wav(
-                wav_path,
-                normalization_path=self.normalization_path
-            )
+            if self.class_filter_config_path is None:
+
+                tensors = preprocess_training_wav(
+                    wav_path,
+                    normalization_path=self.normalization_path
+                )
+
+            else:
+
+                tensors = preprocess_training_wav(
+                    wav_path,
+                    normalization_path=self.normalization_path,
+                    class_filter_config_path=(
+                        self.class_filter_config_path
+                    )
+                )
 
             pulses = []
 
@@ -203,11 +213,8 @@ class PulseDataset(IterableDataset):
                     )
                 )
 
-            # Return all pulses from this WAV as one item.
-            #
-            # This substantially reduces inter-process
-            # communication compared with sending one pulse
-            # at a time.
+            # Return all accepted pulses from this WAV as one
+            # item.
             if pulses:
                 yield pulses
 
@@ -217,11 +224,6 @@ class PulseDataset(IterableDataset):
 # ============================================================
 
 def pulse_stream(wav_loader):
-
-    """
-    Flatten the lists of pulses produced by the workers into
-    a single stream of individual pulse samples.
-    """
 
     for wav_pulses in wav_loader:
 
@@ -240,17 +242,6 @@ def shuffled_pulse_stream(
     random_seed,
     epoch
 ):
-
-    """
-    Main-process bounded global shuffle.
-
-    IMPORTANT:
-    This runs AFTER DataLoader workers have merged their
-    outputs, so the buffer contains pulses from ALL workers.
-
-    If shuffle_buffer_size is larger than the entire dataset,
-    this produces a full-dataset shuffle.
-    """
 
     if shuffle_buffer_size < 1:
         raise ValueError(
@@ -321,10 +312,6 @@ def iter_batches(
     epoch=0
 ):
 
-    """
-    Convert the streamed pulse data into padded model batches.
-    """
-
     if shuffle:
 
         source = shuffled_pulse_stream(
@@ -351,10 +338,6 @@ def iter_batches(
             yield collate_fn(batch)
 
             batch = []
-
-    # --------------------------------------------------------
-    # Final partial batch
-    # --------------------------------------------------------
 
     if batch:
 

@@ -15,27 +15,6 @@ from preprocess import preprocess_wav
 # ============================================================
 
 def discover_wav_files(root_dir, class_to_idx=None):
-    """
-    Recursively find WAV files.
-
-    The immediate parent folder of each WAV file is treated as
-    the class name.
-
-    Parameters
-    ----------
-    root_dir : str or Path
-        Root directory containing class subfolders.
-    class_to_idx : dict, optional
-        Existing class mapping. If None, a mapping is created
-        from the subfolder names found in root_dir.
-
-    Returns
-    -------
-    samples : list of tuple
-        (wav_path, class_index)
-    class_to_idx : dict
-        Mapping from class name to integer index.
-    """
 
     root_dir = Path(root_dir)
 
@@ -90,12 +69,6 @@ def split_dataset_samples(
     validation_ratio,
     random_seed=7
 ):
-    """
-    Split WAV files into train and validation sets.
-
-    Splitting occurs at the WAV-file level so pulses from the
-    same WAV never appear in both sets.
-    """
 
     if not samples:
         return [], []
@@ -142,17 +115,20 @@ def split_dataset_samples(
 
 
 # ============================================================
-# ITERABLE PULSE DATASET
+# STREAMING WAV DATASET
 # ============================================================
 
 class PulseDataset(IterableDataset):
     """
-    Streams WAV files through the complete preprocessing
-    pipeline and yields one pulse tensor at a time.
+    Parallel WAV-level preprocessing dataset.
 
-    Each yielded sample is:
+    Each worker processes WAV files independently, but returns
+    ALL pulses from each WAV as one item.
 
-        sequence, label, length, source_path
+    Pulse-level shuffling is NOT performed here.
+
+    The main process performs the global pulse-level shuffle
+    after all worker outputs have been merged by DataLoader.
     """
 
     def __init__(
@@ -160,6 +136,7 @@ class PulseDataset(IterableDataset):
         samples,
         normalization_path
     ):
+
         super().__init__()
 
         self.samples = list(samples)
@@ -170,10 +147,13 @@ class PulseDataset(IterableDataset):
         worker_info = get_worker_info()
 
         # ----------------------------------------------------
-        # Split WAV files between DataLoader workers
+        # Partition WAV files across workers
         # ----------------------------------------------------
 
         if worker_info is None:
+
+            worker_id = 0
+            num_workers = 1
 
             worker_samples = self.samples
 
@@ -187,7 +167,7 @@ class PulseDataset(IterableDataset):
             ]
 
         # ----------------------------------------------------
-        # Process WAV files
+        # Process one WAV at a time
         # ----------------------------------------------------
 
         for wav_path, label in worker_samples:
@@ -197,14 +177,13 @@ class PulseDataset(IterableDataset):
                 normalization_path=self.normalization_path
             )
 
-            # One tensor = one pulse/sample
+            pulses = []
+
             for sequence in tensors:
 
-                # Skip empty sequences
                 if sequence.numel() == 0:
                     continue
 
-                # Truncate very long sequences
                 if (
                     len(sequence)
                     > config.MAX_SEQUENCE_LENGTH
@@ -215,12 +194,171 @@ class PulseDataset(IterableDataset):
 
                 length = len(sequence)
 
-                yield (
-                    sequence,
-                    label,
-                    length,
-                    wav_path
+                pulses.append(
+                    (
+                        sequence,
+                        label,
+                        length,
+                        wav_path
+                    )
                 )
+
+            # Return all pulses from this WAV as one item.
+            #
+            # This substantially reduces inter-process
+            # communication compared with sending one pulse
+            # at a time.
+            if pulses:
+                yield pulses
+
+
+# ============================================================
+# FLATTEN WAV OUTPUTS INTO INDIVIDUAL PULSES
+# ============================================================
+
+def pulse_stream(wav_loader):
+
+    """
+    Flatten the lists of pulses produced by the workers into
+    a single stream of individual pulse samples.
+    """
+
+    for wav_pulses in wav_loader:
+
+        for pulse in wav_pulses:
+
+            yield pulse
+
+
+# ============================================================
+# GLOBAL PULSE SHUFFLE
+# ============================================================
+
+def shuffled_pulse_stream(
+    wav_loader,
+    shuffle_buffer_size,
+    random_seed,
+    epoch
+):
+
+    """
+    Main-process bounded global shuffle.
+
+    IMPORTANT:
+    This runs AFTER DataLoader workers have merged their
+    outputs, so the buffer contains pulses from ALL workers.
+
+    If shuffle_buffer_size is larger than the entire dataset,
+    this produces a full-dataset shuffle.
+    """
+
+    if shuffle_buffer_size < 1:
+        raise ValueError(
+            "shuffle_buffer_size must be >= 1."
+        )
+
+    rng = random.Random(
+        random_seed + epoch
+    )
+
+    generator = pulse_stream(
+        wav_loader
+    )
+
+    buffer = []
+
+    # --------------------------------------------------------
+    # Fill initial buffer
+    # --------------------------------------------------------
+
+    for _ in range(shuffle_buffer_size):
+
+        try:
+
+            sample = next(generator)
+
+        except StopIteration:
+
+            break
+
+        buffer.append(sample)
+
+    # --------------------------------------------------------
+    # Draw randomly while replacing samples
+    # --------------------------------------------------------
+
+    while buffer:
+
+        index = rng.randrange(
+            len(buffer)
+        )
+
+        selected = buffer[index]
+
+        try:
+
+            replacement = next(generator)
+
+            buffer[index] = replacement
+
+        except StopIteration:
+
+            buffer.pop(index)
+
+        yield selected
+
+
+# ============================================================
+# BATCH GENERATOR
+# ============================================================
+
+def iter_batches(
+    wav_loader,
+    batch_size,
+    shuffle=False,
+    shuffle_buffer_size=10000,
+    random_seed=7,
+    epoch=0
+):
+
+    """
+    Convert the streamed pulse data into padded model batches.
+    """
+
+    if shuffle:
+
+        source = shuffled_pulse_stream(
+            wav_loader=wav_loader,
+            shuffle_buffer_size=shuffle_buffer_size,
+            random_seed=random_seed,
+            epoch=epoch
+        )
+
+    else:
+
+        source = pulse_stream(
+            wav_loader
+        )
+
+    batch = []
+
+    for sample in source:
+
+        batch.append(sample)
+
+        if len(batch) >= batch_size:
+
+            yield collate_fn(batch)
+
+            batch = []
+
+    # --------------------------------------------------------
+    # Final partial batch
+    # --------------------------------------------------------
+
+    if batch:
+
+        yield collate_fn(batch)
 
 
 # ============================================================
@@ -228,24 +366,6 @@ class PulseDataset(IterableDataset):
 # ============================================================
 
 def collate_fn(batch):
-    """
-    Create padded batches for use with
-    pack_padded_sequence().
-
-    Returns
-    -------
-    padded_sequences : torch.Tensor
-        Shape: (batch, max_len, num_features)
-
-    labels : torch.Tensor
-        Shape: (batch,)
-
-    lengths : torch.Tensor
-        Shape: (batch,)
-
-    file_paths : tuple
-        Source WAV path for each pulse.
-    """
 
     sequences, labels, lengths, file_paths = zip(*batch)
 

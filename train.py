@@ -1,5 +1,6 @@
 # train.py
 from pathlib import Path
+import csv
 
 import torch
 import torch.nn as nn
@@ -10,9 +11,9 @@ import config
 
 from dataset import (
     PulseDataset,
-    collate_fn,
     discover_wav_files,
     split_dataset_samples,
+    iter_batches
 )
 
 from model import LSTMClassifier
@@ -139,7 +140,11 @@ def evaluate_model(
 
     with torch.no_grad():
 
-        for sequences, labels, lengths, _ in data_loader:
+        for sequences, labels, lengths, _ in iter_batches(
+            data_loader,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False
+        ):
 
             sequences = sequences.to(device)
             labels = labels.to(device)
@@ -183,6 +188,45 @@ def evaluate_model(
         running_correct / running_total
     )
 
+
+# ============================================================
+# WRITE VALIDATION FILES CSV
+# ============================================================
+
+def write_validation_files(validation_samples):
+
+    output_path = (
+        Path(__file__).resolve().parent
+        / "validation_files.csv"
+    )
+
+    with open(
+        output_path,
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as csv_file:
+
+        writer = csv.writer(csv_file)
+
+        writer.writerow([
+            "file_path",
+            "class_name"
+        ])
+
+        for file_path, _ in validation_samples:
+
+            file_path = Path(file_path).resolve()
+
+            writer.writerow([
+                str(file_path),
+                file_path.parent.name
+            ])
+
+    print(
+        f"Saved validation file list to:\n"
+        f"{output_path}"
+    )
 
 # ============================================================
 # TRAIN
@@ -242,6 +286,14 @@ def train():
     )
 
     # ========================================================
+    # SAVE VALIDATION FILE LIST
+    # ========================================================
+
+    write_validation_files(
+        validation_samples
+    )
+
+    # ========================================================
     # FIT NORMALIZATION ON TRAINING DATA ONLY
     # ========================================================
 
@@ -283,12 +335,23 @@ def train():
     # DATALOADERS
     # ========================================================
 
+    loader_kwargs = {
+        "batch_size": None,
+        "num_workers": config.NUM_WORKERS,
+        "pin_memory": True,
+    }
+
+    if config.NUM_WORKERS > 0:
+
+        loader_kwargs["persistent_workers"] = True
+
+        # Controls how many WAV results each worker can have
+        # prepared ahead of time.
+        loader_kwargs["prefetch_factor"] = 2
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.BATCH_SIZE,
-        collate_fn=collate_fn,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=True
+        **loader_kwargs
     )
 
     validation_loader = None
@@ -297,10 +360,7 @@ def train():
 
         validation_loader = DataLoader(
             validation_dataset,
-            batch_size=config.BATCH_SIZE,
-            collate_fn=collate_fn,
-            num_workers=config.NUM_WORKERS,
-            pin_memory=True
+            **loader_kwargs
         )
 
     # ========================================================
@@ -343,7 +403,14 @@ def train():
         running_correct = 0
         running_total = 0
 
-        for sequences, labels, lengths, _ in train_loader:
+        for sequences, labels, lengths, _ in iter_batches(
+            train_loader,
+            batch_size=config.BATCH_SIZE,
+            shuffle=True,
+            shuffle_buffer_size=config.SHUFFLE_BUFFER_SIZE,
+            random_seed=config.RANDOM_SEED,
+            epoch=epoch
+        ):
 
             sequences = sequences.to(
                 device,
@@ -504,4 +571,3 @@ def train():
 
 if __name__ == "__main__":
     train()
-    

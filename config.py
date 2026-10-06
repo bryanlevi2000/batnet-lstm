@@ -5,7 +5,7 @@
 # INPUT / OUTPUT
 # ============================================================
 TRAIN_DIR = r"C:\Users\Students\Downloads\081126V1\1_Train"
-TEST_DIR = r"C:\Users\Students\Box\BatNET 2024-2026\Bat Recordings (Call Library)\Subsets for Development\Test Sets\usfws_12_V2"
+TEST_DIR = r"E:\CERL\west_point_mistnet_2019"
 
 # ============================================================
 # DENOISING
@@ -61,13 +61,14 @@ PCHIP_TIME_INTERVAL = 100  # microseconds
 # ============================================================
 # NORMALIZATION
 # ============================================================
-COLUMNS = ["freq_hz", "amplitude"] # options are slope, freq_hz, amplitude, position
-STATS_FILE = r"C:\Users\Students\Box\BatNET 2024-2026\Models\100126V1\2_Classifier\batnet-lstm\normalization_stats.json"
+COLUMNS = ["freq_hz", "amplitude", "slope"] # options are slope, freq_hz, amplitude, position
+STATS_FILE = r"C:\Users\Students\Desktop\Working\test\normalization_stats.json"
 
 # ============================================================
-# PARALLEL PROCESSING
+# COMPUTER WORKLOAD CONFIGURATION
 # ============================================================
 NUM_WORKERS = 24
+SHUFFLE_BUFFER_SIZE = 10000
 
 # Model configuration
 # ============================================================
@@ -76,12 +77,12 @@ NUM_WORKERS = 24
 BATCH_SIZE = 32
 HIDDEN_SIZE = 128
 NUM_LAYERS = 2
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0005
 DROPOUT = 0.2
 ATTENTION_DROPOUT = 0.2
-TARGET_REPLICATION_ALPHA = 0.0
+TARGET_REPLICATION_ALPHA = 0.2
 NUM_EPOCHS = 200
-MAX_SEQUENCE_LENGTH = 300
+MAX_SEQUENCE_LENGTH = 180
 VALIDATION_RATIO = 0.15
 PATIENCE = 20
 RANDOM_SEED = 7

@@ -1,3 +1,4 @@
+#dataset.py
 from pathlib import Path
 import random
 
@@ -7,7 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 import config
 from preprocess import preprocess_training_wav
-
+from skipped_files import record_skipped_file
 
 # ============================================================
 # DISCOVER WAV FILES AND CLASSES
@@ -121,11 +122,9 @@ class PulseDataset(IterableDataset):
     """
     Parallel WAV-level preprocessing dataset.
 
-    The dataset uses the TRAINING/VALIDATION preprocessing path,
-    which includes the class-specific pulse filter.
-
-    Each worker processes WAV files independently, but returns
-    ALL accepted pulses from each WAV as one item.
+    Each worker processes WAV files independently.
+    Each WAV is preprocessed exactly once per iteration.
+    All accepted pulses from each WAV are returned as one item.
     """
 
     def __init__(
@@ -134,89 +133,65 @@ class PulseDataset(IterableDataset):
         normalization_path,
         class_filter_config_path=None
     ):
-
         super().__init__()
 
         self.samples = list(samples)
         self.normalization_path = normalization_path
-        self.class_filter_config_path = (
-            class_filter_config_path
-        )
+        self.class_filter_config_path = class_filter_config_path
 
     def __iter__(self):
 
         worker_info = get_worker_info()
 
-        # ----------------------------------------------------
-        # Partition WAV files across workers
-        # ----------------------------------------------------
-
+        # Partition WAV files across workers.
         if worker_info is None:
-
             worker_samples = self.samples
-
         else:
-
             worker_id = worker_info.id
             num_workers = worker_info.num_workers
+            worker_samples = self.samples[worker_id::num_workers]
 
-            worker_samples = self.samples[
-                worker_id::num_workers
-            ]
-
-        # ----------------------------------------------------
-        # Process one WAV at a time
-        # ----------------------------------------------------
-
+        # Process each WAV exactly once.
         for wav_path, label in worker_samples:
-
-            if self.class_filter_config_path is None:
-
-                tensors = preprocess_training_wav(
-                    wav_path,
-                    normalization_path=self.normalization_path
-                )
-
-            else:
-
-                tensors = preprocess_training_wav(
-                    wav_path,
-                    normalization_path=self.normalization_path,
-                    class_filter_config_path=(
-                        self.class_filter_config_path
+            try:
+                if self.class_filter_config_path is None:
+                    tensors = preprocess_training_wav(
+                        wav_path,
+                        normalization_path=self.normalization_path
                     )
-                )
-
-            pulses = []
-
-            for sequence in tensors:
-
-                if sequence.numel() == 0:
-                    continue
-
-                if (
-                    len(sequence)
-                    > config.MAX_SEQUENCE_LENGTH
-                ):
-                    sequence = sequence[
-                        :config.MAX_SEQUENCE_LENGTH
-                    ]
-
-                length = len(sequence)
-
-                pulses.append(
-                    (
-                        sequence,
-                        label,
-                        length,
-                        wav_path
+                else:
+                    tensors = preprocess_training_wav(
+                        wav_path,
+                        normalization_path=self.normalization_path,
+                        class_filter_config_path=(
+                            self.class_filter_config_path
+                        )
                     )
-                )
 
-            # Return all accepted pulses from this WAV as one
-            # item.
-            if pulses:
-                yield pulses
+                pulses = []
+
+                for sequence in tensors:
+                    if sequence.numel() == 0:
+                        continue
+
+                    if len(sequence) > config.MAX_SEQUENCE_LENGTH:
+                        sequence = sequence[:config.MAX_SEQUENCE_LENGTH]
+
+                    pulses.append(
+                        (
+                            sequence,
+                            label,
+                            len(sequence),
+                            wav_path
+                        )
+                    )
+
+                if pulses:
+                    yield pulses
+
+            except Exception as error:
+                record_skipped_file(wav_path, error)
+                continue
 
 
 # ============================================================

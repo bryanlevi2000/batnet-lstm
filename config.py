@@ -4,8 +4,8 @@
 # ============================================================
 # INPUT / OUTPUT
 # ============================================================
-TRAIN_DIR = r"C:\Users\Students\Downloads\081126V1\1_Train"
-TEST_DIR = r"C:\Users\Students\Box\BatNET 2024-2026\Bat Recordings (Call Library)\Subsets for Development\Test Sets\MYTSEP_MYTSOD_Reference_1\wav"
+TRAIN_DIR = r"C:\Users\Students\Downloads\usfws_12_V2\usfws_12_V2"
+TEST_DIR = r"C:\Users\Students\Downloads\usfws_12_V2\usfws_12_V2"
 
 # ============================================================
 # DENOISING
@@ -62,7 +62,7 @@ PCHIP_TIME_INTERVAL = 100  # microseconds
 # NORMALIZATION
 # ============================================================
 COLUMNS = ["freq_hz", "amplitude", "slope"] # options are slope, freq_hz, amplitude, position
-STATS_FILE = r"C:\Users\Students\Desktop\Working\batnet-lstm\normalization_stats.json"
+STATS_FILE = r"C:\Users\Students\Box\BatNET 2024-2026\Models\100926V1\2_Classifier\normalization_stats.json"
 
 # ============================================================
 # COMPUTER WORKLOAD CONFIGURATION
@@ -84,17 +84,11 @@ DROPOUT = 0.2
 ATTENTION_DROPOUT = 0.2
 TARGET_REPLICATION_ALPHA = 0.2
 NUM_EPOCHS = 200
-MAX_SEQUENCE_LENGTH = 180
+MAX_SEQUENCE_LENGTH = 250
 VALIDATION_RATIO = 0.15
 PATIENCE = 20
 RANDOM_SEED = 7
 WEIGHT_DECAY = 1e-5
-
-# Learning rate scheduler configuration
-SCHEDULER_FACTOR = 0.5
-SCHEDULER_PATIENCE = 5
-SCHEDULER_THRESHOLD = 1e-4
-SCHEDULER_MIN_LR = 1e-5
 
 FEATURE_COLUMNS = [
     f"{column}_normalized"

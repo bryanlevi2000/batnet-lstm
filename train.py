@@ -23,6 +23,7 @@ from preprocess import (
     DEFAULT_CLASS_FILTER_CONFIG
 )
 
+from skipped_files import initialize_skipped_file_log
 
 # ============================================================
 # BINARY TARGETS
@@ -259,7 +260,7 @@ def train():
     # ========================================================
     # DISCOVER WAV FILES
     # ========================================================
-
+    initialize_skipped_file_log()
     all_samples, class_to_idx = discover_wav_files(
         config.TRAIN_DIR
     )
@@ -414,10 +415,10 @@ def train():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
-        factor=config.SCHEDULER_FACTOR,
-        patience=config.SCHEDULER_PATIENCE,
-        threshold=config.SCHEDULER_THRESHOLD,
-        min_lr=config.SCHEDULER_MIN_LR
+        factor=0.5,
+        patience=5,
+        threshold=1e-4,
+        min_lr=1e-5
     )
 
     # ========================================================

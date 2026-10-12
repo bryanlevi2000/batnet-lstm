@@ -13,7 +13,6 @@ from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 
 import config
-from dataset import discover_wav_files
 from preprocess import preprocess_wav
 from model import LSTMClassifier
 
@@ -22,24 +21,8 @@ from model import LSTMClassifier
 # CPU / WORKER CONFIGURATION
 # ============================================================
 
-TOTAL_CORES = os.cpu_count() or 1
-
-if os.name == "nt":
-    NUM_WORKERS = min(
-        config.NUM_WORKERS,
-        max(4, TOTAL_CORES // 4),
-        8,
-    )
-else:
-    NUM_WORKERS = min(
-        config.NUM_WORKERS,
-        max(4, TOTAL_CORES // 2),
-    )
-
-MODEL_THREADS = max(
-    2,
-    min(8, TOTAL_CORES // max(1, NUM_WORKERS))
-)
+NUM_WORKERS = config.EVALUATION_NUM_CORES
+MODEL_THREADS = config.MODEL_THREADS
 
 torch.set_num_threads(MODEL_THREADS)
 
@@ -72,14 +55,46 @@ def worker_init(worker_id):
 
 
 # ============================================================
+# RECURSIVE WAV DISCOVERY
+# ============================================================
+
+def discover_all_wav_files(root_dir):
+    """
+    Recursively find every WAV file underneath root_dir.
+    """
+
+    root_dir = Path(root_dir)
+
+    if not root_dir.exists():
+        raise FileNotFoundError(
+            f"TEST_DIR does not exist:\n{root_dir}"
+        )
+
+    if not root_dir.is_dir():
+        raise NotADirectoryError(
+            f"TEST_DIR is not a directory:\n{root_dir}"
+        )
+
+    wav_files = sorted(
+        path
+        for path in root_dir.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() == ".wav"
+    )
+
+    return wav_files
+
+
+# ============================================================
 # WAV-LEVEL EVALUATION DATASET
 # ============================================================
 
 class EvaluationWavDataset(IterableDataset):
 
-    def __init__(self, samples, normalization_path):
+    def __init__(self, wav_files, normalization_path):
         super().__init__()
-        self.samples = list(samples)
+
+        self.wav_files = list(wav_files)
         self.normalization_path = normalization_path
 
     def __iter__(self):
@@ -93,40 +108,86 @@ class EvaluationWavDataset(IterableDataset):
             worker_id = worker_info.id
             num_workers = worker_info.num_workers
 
-        worker_samples = self.samples[
+        worker_files = self.wav_files[
             worker_id::num_workers
         ]
 
-        for wav_path, label in worker_samples:
+        for wav_path in worker_files:
 
-            pulses = preprocess_wav(
-                wav_path,
-                normalization_path=self.normalization_path
-            )
+            # ------------------------------------------------
+            # ALWAYS account for this WAV.
+            #
+            # If preprocessing fails, do not kill the worker.
+            # Instead, yield a failure record.
+            # ------------------------------------------------
+
+            try:
+
+                pulses = preprocess_wav(
+                    wav_path,
+                    normalization_path=self.normalization_path
+                )
+
+            except Exception as error:
+
+                yield {
+                    "status": "error",
+                    "wav_path": wav_path,
+                    "error": f"{type(error).__name__}: {error}",
+                    "pulses": None,
+                }
+
+                continue
+
+            # ------------------------------------------------
+            # Process successfully preprocessed WAV
+            # ------------------------------------------------
 
             valid_pulses = []
 
-            for sequence in pulses:
+            try:
 
-                if sequence.numel() == 0:
-                    continue
+                for sequence in pulses:
 
-                if len(sequence) > config.MAX_SEQUENCE_LENGTH:
-                    sequence = sequence[
-                        :config.MAX_SEQUENCE_LENGTH
-                    ]
+                    if sequence.numel() == 0:
+                        continue
 
-                valid_pulses.append(
-                    (
-                        sequence,
-                        label,
-                        len(sequence),
-                        wav_path,
+                    if len(sequence) > config.MAX_SEQUENCE_LENGTH:
+                        sequence = sequence[
+                            :config.MAX_SEQUENCE_LENGTH
+                        ]
+
+                    valid_pulses.append(
+                        (
+                            sequence,
+                            len(sequence),
+                            wav_path,
+                        )
                     )
-                )
 
-            if valid_pulses:
-                yield valid_pulses
+            except Exception as error:
+
+                yield {
+                    "status": "error",
+                    "wav_path": wav_path,
+                    "error": (
+                        f"{type(error).__name__}: {error}"
+                    ),
+                    "pulses": None,
+                }
+
+                continue
+
+            # ------------------------------------------------
+            # WAV successfully processed
+            # ------------------------------------------------
+
+            yield {
+                "status": "success",
+                "wav_path": wav_path,
+                "error": None,
+                "pulses": valid_pulses,
+            }
 
 
 # ============================================================
@@ -136,15 +197,65 @@ class EvaluationWavDataset(IterableDataset):
 def build_batches(
     wav_loader,
     batch_size,
-    preprocessing_bar
+    preprocessing_bar,
+    error_records,
+    successful_wavs,
+    zero_pulse_wavs,
 ):
 
     batch = []
 
-    for wav_pulses in wav_loader:
+    for wav_result in wav_loader:
 
-        # One WAV has finished preprocessing.
+        # ----------------------------------------------------
+        # Every result corresponds to exactly one WAV.
+        # Therefore this progress bar represents WAVs actually
+        # accounted for, rather than WAVs that happened to
+        # produce pulses.
+        # ----------------------------------------------------
+
         preprocessing_bar.update(1)
+
+        status = wav_result["status"]
+        wav_path = wav_result["wav_path"]
+
+        # ----------------------------------------------------
+        # Failed WAV
+        # ----------------------------------------------------
+
+        if status == "error":
+
+            error_records.append({
+                "file": str(wav_path),
+                "status": "preprocessing_error",
+                "error": wav_result["error"],
+            })
+
+            continue
+
+        # ----------------------------------------------------
+        # Successful WAV
+        # ----------------------------------------------------
+
+        successful_wavs.append(wav_path)
+
+        wav_pulses = wav_result["pulses"]
+
+        # A WAV can preprocess successfully but contain
+        # no usable pulses.
+        if not wav_pulses:
+            zero_pulse_wavs.append(wav_path)
+
+            error_records.append({
+                "file": str(wav_path),
+                "status": "no_pulses",
+                "error": "Preprocessing succeeded, but no usable pulses were produced.",
+            })
+
+            continue
+        # ----------------------------------------------------
+        # Add pulses to batches
+        # ----------------------------------------------------
 
         for pulse in wav_pulses:
 
@@ -156,23 +267,26 @@ def build_batches(
 
                 batch = []
 
+    # --------------------------------------------------------
+    # Final partial batch
+    # --------------------------------------------------------
+
     if batch:
         yield collate_batch(batch)
 
 
+# ============================================================
+# COLLATE
+# ============================================================
+
 def collate_batch(batch):
 
-    sequences, labels, lengths, file_paths = zip(*batch)
+    sequences, lengths, file_paths = zip(*batch)
 
     padded_sequences = pad_sequence(
         sequences,
         batch_first=True,
         padding_value=0.0,
-    )
-
-    labels = torch.tensor(
-        labels,
-        dtype=torch.long,
     )
 
     lengths = torch.tensor(
@@ -182,7 +296,6 @@ def collate_batch(batch):
 
     return (
         padded_sequences,
-        labels,
         lengths,
         file_paths,
     )
@@ -197,6 +310,9 @@ def producer(
     batch_size,
     output_queue,
     preprocessing_bar,
+    error_records,
+    successful_wavs,
+    zero_pulse_wavs,
 ):
 
     try:
@@ -205,6 +321,9 @@ def producer(
             wav_loader,
             batch_size,
             preprocessing_bar,
+            error_records,
+            successful_wavs,
+            zero_pulse_wavs,
         ):
             output_queue.put(batch)
 
@@ -224,13 +343,14 @@ def main():
     device = torch.device("cpu")
 
     print(f"Using device: {device}")
+
     print(
         f"Preprocessing workers: {NUM_WORKERS}, "
         f"model threads: {MODEL_THREADS}"
     )
 
     # ========================================================
-    # LOAD MODEL CHECKPOINT FIRST
+    # LOAD MODEL CHECKPOINT
     # ========================================================
 
     checkpoint_path = (
@@ -261,29 +381,22 @@ def main():
     else:
         state_dict = checkpoint
 
-    # --------------------------------------------------------
-    # Recover the ORIGINAL training class mapping.
-    #
-    # train.py saves:
-    #     "class_names"
-    #     "class_to_idx"
-    #
-    # This is critical because the test directory may contain
-    # only a subset of the training classes.
-    # --------------------------------------------------------
+    # ========================================================
+    # RECOVER MODEL CLASS MAPPING
+    # ========================================================
 
     if not isinstance(checkpoint, dict):
         raise RuntimeError(
             "best_model.pt does not contain the training "
-            "class mapping. Re-train using the provided "
-            "train.py so class_to_idx is saved in the checkpoint."
+            "class mapping. Re-train using train.py so "
+            "class_to_idx is saved in the checkpoint."
         )
 
     if "class_to_idx" not in checkpoint:
         raise RuntimeError(
             "best_model.pt does not contain 'class_to_idx'. "
-            "Re-train using train.py so the class mapping is "
-            "saved in the checkpoint."
+            "Re-train using train.py so the class mapping "
+            "is saved in the checkpoint."
         )
 
     training_class_to_idx = {
@@ -291,7 +404,6 @@ def main():
         for name, index in checkpoint["class_to_idx"].items()
     }
 
-    # Preserve the original training order.
     if "class_names" in checkpoint:
 
         training_class_names = [
@@ -312,52 +424,23 @@ def main():
     num_classes = len(training_class_to_idx)
 
     # ========================================================
-    # LOAD TEST FILES
+    # LOAD ALL WAV FILES RECURSIVELY
     # ========================================================
 
-    # IMPORTANT:
-    # Pass the TRAINING class_to_idx into discover_wav_files.
-    #
-    # This means:
-    #
-    #   training class A -> index 0
-    #   training class B -> index 1
-    #   ...
-    #   training class L -> index 11
-    #
-    # even when the test directory only contains 8 classes.
-    test_samples, _ = discover_wav_files(
-        config.TEST_DIR,
-        class_to_idx=training_class_to_idx,
+    wav_files = discover_all_wav_files(
+        config.TEST_DIR
     )
 
     print(
-        f"Found {len(test_samples)} test WAV files."
+        f"Found {len(wav_files):,} WAV files."
     )
 
-    # --------------------------------------------------------
-    # Report which classes are present in the test set
-    # --------------------------------------------------------
-
-    test_class_names = sorted(
-        {
-            Path(file_path).parent.name
-            for file_path, _ in test_samples
-        }
-    )
-
-    print(
-        f"Test classes present: "
-        f"{len(test_class_names)}/{num_classes}"
-    )
-
-    for class_name in training_class_names:
-
-        if class_name in test_class_names:
-            print(f"  [TEST] {class_name}")
-
-        else:
-            print(f"  [----] {class_name}")
+    if not wav_files:
+        print(
+            f"No WAV files found under:\n"
+            f"{Path(config.TEST_DIR).resolve()}"
+        )
+        return
 
     # ========================================================
     # LOAD MODEL
@@ -381,7 +464,7 @@ def main():
     # ========================================================
 
     test_dataset = EvaluationWavDataset(
-        test_samples,
+        wav_files,
         config.STATS_FILE,
     )
 
@@ -406,7 +489,7 @@ def main():
     # ========================================================
 
     preprocessing_bar = tqdm(
-        total=len(test_samples),
+        total=len(wav_files),
         desc="Preprocessing",
         unit="wav",
         position=0,
@@ -414,7 +497,6 @@ def main():
     )
 
     evaluation_bar = tqdm(
-        total=len(test_samples),
         desc="Evaluating",
         unit="pulse",
         position=1,
@@ -427,6 +509,11 @@ def main():
 
     batch_queue = queue.Queue(maxsize=4)
 
+    # These are written by the producer thread.
+    error_records = []
+    successful_wavs = []
+    zero_pulse_wavs = []
+
     producer_thread = threading.Thread(
         target=producer,
         args=(
@@ -434,6 +521,9 @@ def main():
             config.BATCH_SIZE,
             batch_queue,
             preprocessing_bar,
+            error_records,
+            successful_wavs,
+            zero_pulse_wavs,
         ),
         daemon=True,
     )
@@ -446,7 +536,6 @@ def main():
 
     all_probabilities = []
     all_logits = []
-    all_labels = []
     all_predictions = []
     all_confidences = []
     all_files = []
@@ -469,7 +558,6 @@ def main():
 
             (
                 sequences,
-                labels,
                 lengths,
                 file_paths,
             ) = item
@@ -492,8 +580,6 @@ def main():
             # Final attention-pooled logits
             logits = final_logits
 
-            # The model was trained with BCEWithLogitsLoss,
-            # so retain the sigmoid probability conversion.
             probabilities = torch.sigmoid(
                 logits
             )
@@ -512,10 +598,6 @@ def main():
 
             all_logits.append(
                 logits.cpu().numpy()
-            )
-
-            all_labels.append(
-                labels.numpy()
             )
 
             all_predictions.append(
@@ -540,11 +622,75 @@ def main():
     evaluation_bar.close()
 
     # ========================================================
+    # SAVE PREPROCESSING ERRORS
+    # ========================================================
+
+    output_directory = (
+        Path(__file__).resolve().parent
+    )
+
+    errors_path = (
+        output_directory
+        / "evaluation_errors.csv"
+    )
+
+    if error_records:
+
+        error_result = pd.DataFrame(
+            error_records
+        )
+
+        error_result.to_csv(
+            errors_path,
+            index=False,
+        )
+
+    else:
+
+        # Still create the file so the user can confirm
+        # that there were zero preprocessing errors.
+        pd.DataFrame(
+            columns=[
+                "file",
+                "status",
+                "error",
+            ]
+        ).to_csv(
+            errors_path,
+            index=False,
+        )
+
+    # ========================================================
     # RESULTS
     # ========================================================
 
     if not all_probabilities:
-        print("No valid pulses found.")
+
+        print(
+            "\nNo valid pulses found."
+        )
+
+        print(
+            f"Found:              {len(wav_files):,} WAV files"
+        )
+
+        print(
+            f"Successfully read:  {len(successful_wavs):,} WAV files"
+        )
+
+        print(
+            f"Preprocessing errors:{len(error_records):,} WAV files"
+        )
+
+        print(
+            f"No usable pulses:   {len(zero_pulse_wavs):,} WAV files"
+        )
+
+        print(
+            f"\nSaved error report to:\n"
+            f"{errors_path}"
+        )
+
         return
 
     probabilities = np.concatenate(
@@ -554,11 +700,6 @@ def main():
 
     logits = np.concatenate(
         all_logits,
-        axis=0,
-    )
-
-    labels = np.concatenate(
-        all_labels,
         axis=0,
     )
 
@@ -581,14 +722,18 @@ def main():
         for name, index in training_class_to_idx.items()
     }
 
-    ground_truth_names = [
-        idx_to_class[int(label)]
-        for label in labels
-    ]
-
     prediction_names = [
         idx_to_class[int(prediction)]
         for prediction in predictions
+    ]
+
+    # ========================================================
+    # GROUND TRUTH FROM IMMEDIATE PARENT DIRECTORY
+    # ========================================================
+
+    ground_truth_names = [
+        Path(file_path).parent.name
+        for file_path in all_files
     ]
 
     # ========================================================
@@ -607,10 +752,6 @@ def main():
 
     # ========================================================
     # CLASS PROBABILITY COLUMNS
-    #
-    # IMPORTANT:
-    # Write ALL 12 training classes, not just the 8 classes
-    # found in the test folder.
     # ========================================================
 
     for class_index in range(num_classes):
@@ -638,11 +779,11 @@ def main():
         ]
 
     # ========================================================
-    # SAVE
+    # SAVE PREDICTIONS
     # ========================================================
 
     output_path = (
-        Path(__file__).resolve().parent
+        output_directory
         / "predictions.csv"
     )
 
@@ -651,15 +792,74 @@ def main():
         index=False,
     )
 
+    # ========================================================
+    # FINAL SUMMARY
+    # ========================================================
+
+    evaluated_wavs = len(
+        set(all_files)
+    )
+
     print(
         f"\nSaved predictions to:\n"
         f"{output_path}"
     )
 
     print(
-        f"Evaluated {len(result):,} pulses "
-        f"from {len(set(all_files)):,} WAV files."
+        f"\nSaved preprocessing error report to:\n"
+        f"{errors_path}"
     )
+
+    print("\nEvaluation summary:")
+    print(
+        f"  WAV files found:          {len(wav_files):,}"
+    )
+    print(
+        f"  WAV files successfully read: "
+        f"{len(successful_wavs):,}"
+    )
+    print(
+        f"  WAV files with errors:    "
+        f"{len(error_records):,}"
+    )
+    print(
+        f"  WAV files with no pulses: "
+        f"{len(zero_pulse_wavs):,}"
+    )
+    print(
+        f"  WAV files producing predictions: "
+        f"{evaluated_wavs:,}"
+    )
+    print(
+        f"  Pulses evaluated:         "
+        f"{len(result):,}"
+    )
+
+    # --------------------------------------------------------
+    # Sanity check
+    # --------------------------------------------------------
+
+    accounted_for = (
+        len(successful_wavs)
+        + len(error_records)
+    )
+
+    if accounted_for != len(wav_files):
+
+        print(
+            "\nWARNING:"
+        )
+
+        print(
+            f"Only {accounted_for:,} of "
+            f"{len(wav_files):,} WAV files were accounted for."
+        )
+
+    else:
+
+        print(
+            "\nAll discovered WAV files were accounted for."
+        )
 
 
 # ============================================================
@@ -668,4 +868,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    

@@ -1,3 +1,4 @@
+# preprocess.py
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
@@ -106,6 +107,7 @@ def _value_in_range(value, value_range):
     """
     Inclusive range check.
     """
+
     minimum, maximum = value_range
 
     return (
@@ -315,6 +317,7 @@ def filter_pulses_by_class(
 
     return filtered_df
 
+
 # ============================================================
 # PROCESS ONE WAV THROUGH ZC + PCHIP + FEATURES
 # ============================================================
@@ -326,7 +329,7 @@ def process_wav(
     return_filter_stats=False,
     stop_after_class_filter=False
 ):
-    
+
     """
     Process one WAV through:
 
@@ -424,73 +427,41 @@ def process_wav(
     # Characteristic frequency
     # --------------------------------------------------------
 
-    candidate_df = df[df["status"] > 1]
-    characteristic_indices = []
+    candidate_df = df[df["status"] > 1].copy()
 
     for pulse_id, pulse_df in candidate_df.groupby(
         "pulse_id",
         sort=False
     ):
 
-        characteristic_index = find_characteristic_frequency(
+        pulse_result = find_characteristic_frequency(
             pulse_df,
             min_points=config.CHARACTERISTIC_MIN_POINTS,
             last_fraction=config.CHARACTERISTIC_LAST_FRACTION
         )
 
-        if characteristic_index is not None:
-            characteristic_indices.append(
-                characteristic_index
-            )
+        if pulse_result is not None:
 
-    if characteristic_indices:
-        df.loc[
-            characteristic_indices,
-            "status"
-        ] = 3
+            # find_characteristic_frequency() changes the
+            # characteristic row to status = 3 in pulse_result.
+            #
+            # Copy those modified status values back into
+            # the main dataframe.
+            df.loc[
+                pulse_result.index,
+                "status"
+            ] = pulse_result["status"]
 
     # --------------------------------------------------------
     # Frequency-decrease cutoff
     # --------------------------------------------------------
 
-    candidate_df = df[df["status"] > 1]
-    cutoff_indices = []
-
-    for pulse_id, pulse_df in candidate_df.groupby(
-        "pulse_id",
-        sort=False
-    ):
-
-        characteristic_points = pulse_df[
-            pulse_df["status"] == 3
-        ]
-
-        if characteristic_points.empty:
-            continue
-
-        characteristic_index = (
-            characteristic_points.index[0]
+    df = apply_frequency_decrease_cutoff(
+        df,
+        cutoff_hz=(
+            config.CHARACTERISTIC_FREQUENCY_DECREASE_CUTOFF_HZ
         )
-
-        pulse_result = apply_frequency_decrease_cutoff(
-            pulse_df,
-            characteristic_index=characteristic_index,
-            cutoff_hz=(
-                config.CHARACTERISTIC_FREQUENCY_DECREASE_CUTOFF_HZ
-            )
-        )
-
-        cutoff_indices.extend(
-            pulse_result.index[
-                pulse_result["status"] == 1
-            ]
-        )
-
-    if cutoff_indices:
-        df.loc[
-            cutoff_indices,
-            "status"
-        ] = 1
+    )
 
     # --------------------------------------------------------
     # Existing pulse filtering
@@ -531,6 +502,7 @@ def process_wav(
             }
 
         return df
+
     # --------------------------------------------------------
     # NEW CLASS-SPECIFIC TRAINING FILTER
     #
@@ -743,6 +715,7 @@ def preprocess_wav(
         return []
 
     if normalization_path is not None:
+
         df = apply_normalizer(
             df,
             normalization_path
@@ -776,6 +749,7 @@ def preprocess_training_wav(
         return []
 
     if normalization_path is not None:
+
         df = apply_normalizer(
             df,
             normalization_path

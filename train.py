@@ -1,3 +1,4 @@
+#train.py
 from pathlib import Path
 import csv
 
@@ -410,6 +411,15 @@ def train():
         weight_decay=config.WEIGHT_DECAY
     )
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=config.SCHEDULER_FACTOR,
+        patience=config.SCHEDULER_PATIENCE,
+        threshold=config.SCHEDULER_THRESHOLD,
+        min_lr=config.SCHEDULER_MIN_LR
+    )
+
     # ========================================================
     # TRAINING LOOP
     # ========================================================
@@ -533,6 +543,11 @@ def train():
                 f"{validation_accuracy:.4f}"
             )
 
+            scheduler.step(monitor_loss)
+
+            current_lr = optimizer.param_groups[0]["lr"]
+
+            print(f"Learning rate: {current_lr:.8g}")
         # ====================================================
         # SAVE BEST MODEL
         # ====================================================

@@ -4,8 +4,8 @@
 # ============================================================
 # INPUT / OUTPUT
 # ============================================================
-TRAIN_DIR = r"path\to\train\directory"
-TEST_DIR = r"path\to\test\directory"
+TRAIN_DIR = r"C:\Users\Students\Downloads\081126V1\1_Train"
+TEST_DIR = r"C:\Users\Students\Box\BatNET 2024-2026\Bat Recordings (Call Library)\Subsets for Development\Test Sets\MYTSEP_MYTSOD_Reference_1\wav"
 
 # ============================================================
 # DENOISING
@@ -62,13 +62,15 @@ PCHIP_TIME_INTERVAL = 100  # microseconds
 # NORMALIZATION
 # ============================================================
 COLUMNS = ["freq_hz", "amplitude", "slope"] # options are slope, freq_hz, amplitude, position
-STATS_FILE = r"path\to\normalization_stats.json"
+STATS_FILE = r"C:\Users\Students\Desktop\Working\batnet-lstm\normalization_stats.json"
 
 # ============================================================
 # COMPUTER WORKLOAD CONFIGURATION
 # ============================================================
 NUM_WORKERS = 24
-SHUFFLE_BUFFER_SIZE = 10000
+SHUFFLE_BUFFER_SIZE = 10000 # shuffling during training
+EVALUATION_NUM_CORES = 6
+MODEL_THREADS = 2 # 2-8 is a reasonable range
 
 # Model configuration
 # ============================================================
@@ -87,6 +89,12 @@ VALIDATION_RATIO = 0.15
 PATIENCE = 20
 RANDOM_SEED = 7
 WEIGHT_DECAY = 1e-5
+
+# Learning rate scheduler configuration
+SCHEDULER_FACTOR = 0.5
+SCHEDULER_PATIENCE = 5
+SCHEDULER_THRESHOLD = 1e-4
+SCHEDULER_MIN_LR = 1e-5
 
 FEATURE_COLUMNS = [
     f"{column}_normalized"

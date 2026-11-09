@@ -6,6 +6,7 @@ import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 
 
+
 def filter_zc_linearity(
     df,
     lookahead_n=10,
@@ -15,11 +16,7 @@ def filter_zc_linearity(
     plus a final backward-looking window ending at the last point.
     """
 
-    df_out = (
-        df
-        if df["time_us"].is_monotonic_increasing
-        else df.sort_values("time_us")
-    ).copy()
+    df_out = df.copy()
 
     t = df_out["time_us"].to_numpy(dtype=np.float64)
     f = df_out["freq_hz"].to_numpy(dtype=np.float64)
@@ -96,6 +93,7 @@ def filter_zc_linearity(
     return df_out.drop(columns=["linearity"])
 
 
+
 def greedy_walk(
     df,
     time_cutoff,
@@ -112,11 +110,7 @@ def greedy_walk(
     Accepted walks are assigned sequential pulse_id values starting at 1.
     """
 
-    df_out = (
-        df
-        if df["time_us"].is_monotonic_increasing
-        else df.sort_values("time_us")
-    ).copy()
+    df_out = df.copy()
 
     # Replace any existing pulse_id column.
     df_out["pulse_id"] = pd.NA
@@ -243,5 +237,8 @@ def detect_pulse_points(
             min_points=min_points,
             buffer_us=buffer_us
         )
+        
+    # Assign pulse_id = 0 to all non-pulse points
+    df["pulse_id"] = df["pulse_id"].fillna(0).astype(int)
 
     return df

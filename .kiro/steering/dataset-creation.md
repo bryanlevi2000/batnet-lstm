@@ -27,6 +27,12 @@ Each positive `pulse_id` in a WAV's preprocessed output is one sample. Its featu
 - Resume depends on deterministic WAV order (`sorted` and `dirs.sort()`) and unchanged config. If you change the feature set, filters, or `SHARD_NUM_SAMPLES` between runs, resume mixes old and new data. Write to a new `SHARD_PARENT_DIR` instead.
 - `class_mapping.json` is loaded and extended on each run. Existing labels are never reassigned. Do not edit the file by hand unless you also rebuild the shards.
 
+## Rejection summary
+
+- `process_split` accumulates each WAV's `rejection_stats` by class, across both splits, into one dict. `main()` writes it with `filtering.save_rejection_summary` to `config.PULSE_FILTERED_REJECTION_FILE` after both splits finish.
+- Every run processes every WAV, including on resume, so the summary always covers the full dataset. It is written only at the end, so a crashed run leaves the previous file in place.
+- WAVs where stage 1 fails or finds no pulses are not counted. This matches `preprocess/pipeline.py`.
+
 Output format is in `data-contracts.md`.
 
 ## Rules for this stage

@@ -10,7 +10,7 @@ Data flows through four stages in this order. Each stage reads the output of the
 |---|---|---|---|---|
 | 1. Zero-crossing (ZC) extraction | `zc/` | Built | `python zc/pipeline.py` (the `main()` function returns in-memory results only; see the zc steering file) | Pulse point data per WAV |
 | 2. Preprocessing | `preprocess/` | Built | `python preprocess/pipeline.py` | Normalized per-pulse CSVs in `config.OUTPUT_DIR`, plus `pulse_rejection_summary.csv` |
-| 3. Dataset creation | `dataset_creation/` | Built | `python dataset_creation/build_shards.py` | Resumable NumPy shards, `class_mapping.json`, `metadata.jsonl`, `manifest.jsonl` in `config.SHARD_PARENT_DIR` |
+| 3. Dataset creation | `dataset_creation/` | Built | `python dataset_creation/build_shards.py` | Resumable NumPy shards, `class_mapping.json`, `metadata.jsonl`, `manifest.jsonl` in `config.SHARD_PARENT_DIR`, plus `pulse_rejection_summary.csv` |
 | 4. Classifier | `classifier/` | Built | `python classifier/train.py`, `python classifier/inference.py`, `python classifier/validation_inference.py` | Run folder with `training_log.txt` and `best_model.pt` in `config.CLASSIFIER_OUTPUT_DIR`; predictions and failed-files CSVs for the test set and the validation set |
 
 Stage details live in their own steering files:

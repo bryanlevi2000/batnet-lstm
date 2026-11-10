@@ -15,7 +15,7 @@ Written by `preprocess/pipeline.py` to `config.OUTPUT_DIR`, mirroring the folder
 - One row per pulse point. Columns include `time_us`, `freq_hz`, `amplitude`, `pulse_id`, `status`, `slope`, `position`.
 - `freq_hz` and `amplitude` are already z-score normalized using `preprocess/normalization_stats.json`. Do not normalize them again.
 - `pulse_id` identifies each pulse within a file. Values greater than 0 are real pulses.
-- Rejection counts per class are written to `config.PULSE_FILTERED_REJECTION_FILE`.
+- Rejection counts per class are written to `config.PULSE_FILTERED_REJECTION_FILE`. `dataset_creation/build_shards.py` writes the same file, in the same format, to the same path. Whichever script runs last overwrites it. Columns: `class`, `total_pulses`, `accepted`, `rejected`, `rejected_fmin`, `rejected_fmax`, `rejected_fc`, `rejected_duration`. A pulse can fail more than one filter, so the `rejected_*` columns can add up to more than `rejected`.
 
 ## Stage 3 output: NumPy shards
 

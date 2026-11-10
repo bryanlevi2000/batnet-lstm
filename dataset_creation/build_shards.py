@@ -32,6 +32,8 @@ import config
 
 import preprocess.pipeline as pipeline
 
+from filtering import save_rejection_summary
+
 
 # ---------------------------------------------------------------------
 # Configuration
@@ -364,6 +366,7 @@ def process_split(
     shard_start,
     metadata_path,
     manifest_path,
+    rejection_summary,
 ):
 
     shard_index = shard_start
@@ -426,6 +429,20 @@ def process_split(
 
                     if result is None:
                         continue
+
+                    # Accumulate pulse rejection counts by class.
+
+                    stats = result["rejection_stats"]
+
+                    totals = rejection_summary.setdefault(
+                        stats["class"],
+                        {**dict.fromkeys(stats, 0), "class": stats["class"]}
+                    )
+
+                    for key, value in stats.items():
+
+                        if key != "class":
+                            totals[key] += value
 
                     if result["dataframe"] is None or result["dataframe"].empty:
                         continue
@@ -631,6 +648,8 @@ def main():
 
     print(f"Samples per shard: {config.SHARD_NUM_SAMPLES:,}")
 
+    rejection_summary = {}
+
     # Process training data.
 
     process_split(
@@ -643,6 +662,7 @@ def main():
         next_shard["train"],
         metadata_path,
         manifest_path,
+        rejection_summary,
     )
 
     # Process validation data.
@@ -659,9 +679,25 @@ def main():
             next_shard["validation"],
             metadata_path,
             manifest_path,
+            rejection_summary,
         )
 
+    # Save pulse rejection counts by class for both splits.
+
+    rejection_path = Path(config.PULSE_FILTERED_REJECTION_FILE)
+
+    rejection_path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    save_rejection_summary(
+        rejection_summary,
+        rejection_path
+    )
+
     print("\nShard creation complete.")
+    print(f"Rejection summary: {rejection_path}")
 
 
 if __name__ == "__main__":

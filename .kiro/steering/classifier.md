@@ -43,6 +43,7 @@ Run all scripts from the project root. `train.py` does not import from the infer
 
 - `validation_inference.py` runs the same pipeline as `inference.py` (`inference.run`) on the validation WAVs, so its output is directly comparable to the test predictions.
 - The file list is the unique `wav_path` values with `split == "validation"` in `TRAIN_SHARD_DIR/metadata.jsonl`, sorted and joined with `config.INPUT_DIR`. `INPUT_DIR` must still point at the training WAVs.
+- Unreadable metadata lines are skipped and counted. The script raises an error if the readable validation lines don't match the manifest's validation sample count.
 - `metadata.jsonl` only lists WAVs that kept at least one pulse after class filtering during the shard build. Validation WAVs with no surviving pulses are not included.
 - Writes `VAL_PREDICTIONS_PATH` and `VAL_FAILED_FILES_PATH`, in the same formats as `PREDICTIONS_PATH` and `FAILED_FILES_PATH`.
 

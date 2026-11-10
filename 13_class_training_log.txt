@@ -1,0 +1,132 @@
+TRAIN_SHARD_DIR: C:\Users\Students\Desktop\Working\model_training\shards
+FEATURE_COLUMNS: ['freq_hz', 'amplitude']
+BATCH_SIZE: 32
+HIDDEN_SIZE: 128
+NUM_LAYERS: 2
+LEARNING_RATE: 0.001
+DROPOUT: 0.2
+ATTENTION_DROPOUT: 0.2
+TARGET_REPLICATION_ALPHA: 0.5
+NUM_EPOCHS: 200
+MAX_SEQUENCE_LENGTH: 300
+PATIENCE: 20
+WEIGHT_DECAY: 1e-05
+classes: 13
+train samples: 462,474
+validation samples: 82,285
+note: train loss includes the target replication term; val loss is pooled only
+
+epoch 1/200 | train loss 0.1249 acc 72.4% | val loss 0.0793 acc 78.5%
+saved model (val loss 0.0793)
+epoch 2/200 | train loss 0.1038 acc 79.9% | val loss 0.0723 acc 80.5%
+saved model (val loss 0.0723)
+epoch 3/200 | train loss 0.0974 acc 81.8% | val loss 0.0647 acc 83.1%
+saved model (val loss 0.0647)
+epoch 4/200 | train loss 0.0935 acc 82.9% | val loss 0.0664 acc 82.6%
+no improvement for 1/20 epochs
+epoch 5/200 | train loss 0.0906 acc 83.7% | val loss 0.0613 acc 83.8%
+saved model (val loss 0.0613)
+epoch 6/200 | train loss 0.0884 acc 84.5% | val loss 0.0585 acc 84.9%
+saved model (val loss 0.0585)
+epoch 7/200 | train loss 0.0866 acc 85.0% | val loss 0.0598 acc 84.6%
+no improvement for 1/20 epochs
+epoch 8/200 | train loss 0.0853 acc 85.4% | val loss 0.0572 acc 85.5%
+saved model (val loss 0.0572)
+epoch 9/200 | train loss 0.0841 acc 85.7% | val loss 0.0566 acc 85.4%
+saved model (val loss 0.0566)
+epoch 10/200 | train loss 0.0832 acc 85.9% | val loss 0.0582 acc 85.1%
+no improvement for 1/20 epochs
+epoch 11/200 | train loss 0.0824 acc 86.2% | val loss 0.0560 acc 85.7%
+saved model (val loss 0.0560)
+epoch 12/200 | train loss 0.0816 acc 86.4% | val loss 0.0564 acc 85.7%
+no improvement for 1/20 epochs
+epoch 13/200 | train loss 0.0810 acc 86.6% | val loss 0.0542 acc 86.2%
+saved model (val loss 0.0542)
+epoch 14/200 | train loss 0.0804 acc 86.7% | val loss 0.0553 acc 85.8%
+no improvement for 1/20 epochs
+epoch 15/200 | train loss 0.0800 acc 86.9% | val loss 0.0539 acc 86.2%
+saved model (val loss 0.0539)
+epoch 16/200 | train loss 0.0794 acc 87.0% | val loss 0.0549 acc 86.1%
+no improvement for 1/20 epochs
+epoch 17/200 | train loss 0.0789 acc 87.2% | val loss 0.0539 acc 86.3%
+no improvement for 2/20 epochs
+epoch 18/200 | train loss 0.0785 acc 87.3% | val loss 0.0538 acc 86.3%
+saved model (val loss 0.0538)
+epoch 19/200 | train loss 0.0781 acc 87.4% | val loss 0.0540 acc 86.1%
+no improvement for 1/20 epochs
+epoch 20/200 | train loss 0.0777 acc 87.5% | val loss 0.0533 acc 86.4%
+saved model (val loss 0.0533)
+epoch 21/200 | train loss 0.0775 acc 87.6% | val loss 0.0538 acc 86.3%
+no improvement for 1/20 epochs
+epoch 22/200 | train loss 0.0771 acc 87.7% | val loss 0.0539 acc 86.4%
+no improvement for 2/20 epochs
+epoch 23/200 | train loss 0.0769 acc 87.8% | val loss 0.0528 acc 86.6%
+saved model (val loss 0.0528)
+epoch 24/200 | train loss 0.0765 acc 87.9% | val loss 0.0539 acc 86.3%
+no improvement for 1/20 epochs
+epoch 25/200 | train loss 0.0762 acc 88.0% | val loss 0.0544 acc 86.3%
+no improvement for 2/20 epochs
+epoch 26/200 | train loss 0.0760 acc 88.1% | val loss 0.0536 acc 86.5%
+no improvement for 3/20 epochs
+epoch 27/200 | train loss 0.0758 acc 88.1% | val loss 0.0530 acc 86.6%
+no improvement for 4/20 epochs
+epoch 28/200 | train loss 0.0755 acc 88.2% | val loss 0.0532 acc 86.6%
+no improvement for 5/20 epochs
+epoch 29/200 | train loss 0.0753 acc 88.3% | val loss 0.0532 acc 86.7%
+no improvement for 6/20 epochs
+epoch 30/200 | train loss 0.0751 acc 88.3% | val loss 0.0526 acc 86.8%
+saved model (val loss 0.0526)
+epoch 31/200 | train loss 0.0767 acc 87.9% | val loss 0.0528 acc 86.7%
+no improvement for 1/20 epochs
+epoch 32/200 | train loss 0.0749 acc 88.4% | val loss 0.0529 acc 86.8%
+no improvement for 2/20 epochs
+epoch 33/200 | train loss 0.0748 acc 88.4% | val loss 0.0526 acc 86.7%
+saved model (val loss 0.0526)
+epoch 34/200 | train loss 0.0744 acc 88.5% | val loss 0.0532 acc 86.5%
+no improvement for 1/20 epochs
+epoch 35/200 | train loss 0.0743 acc 88.5% | val loss 0.0534 acc 86.6%
+no improvement for 2/20 epochs
+epoch 36/200 | train loss 0.0741 acc 88.7% | val loss 0.0523 acc 87.0%
+saved model (val loss 0.0523)
+epoch 37/200 | train loss 0.0740 acc 88.7% | val loss 0.0536 acc 86.6%
+no improvement for 1/20 epochs
+epoch 38/200 | train loss 0.0738 acc 88.7% | val loss 0.0523 acc 86.8%
+no improvement for 2/20 epochs
+epoch 39/200 | train loss 0.0737 acc 88.7% | val loss 0.0531 acc 86.7%
+no improvement for 3/20 epochs
+epoch 40/200 | train loss 0.0735 acc 88.8% | val loss 0.0530 acc 86.8%
+no improvement for 4/20 epochs
+epoch 41/200 | train loss 0.0734 acc 88.8% | val loss 0.0529 acc 86.6%
+no improvement for 5/20 epochs
+epoch 42/200 | train loss 0.0857 acc 85.2% | val loss 0.0612 acc 83.8%
+no improvement for 6/20 epochs
+epoch 43/200 | train loss 0.0864 acc 85.1% | val loss 0.0583 acc 84.8%
+no improvement for 7/20 epochs
+epoch 44/200 | train loss 0.0844 acc 85.7% | val loss 0.0580 acc 84.8%
+no improvement for 8/20 epochs
+epoch 45/200 | train loss 0.0834 acc 86.0% | val loss 0.0578 acc 85.0%
+no improvement for 9/20 epochs
+epoch 46/200 | train loss 0.0826 acc 86.2% | val loss 0.0572 acc 85.1%
+no improvement for 10/20 epochs
+epoch 47/200 | train loss 0.0820 acc 86.4% | val loss 0.0572 acc 85.2%
+no improvement for 11/20 epochs
+epoch 48/200 | train loss 0.0815 acc 86.5% | val loss 0.0566 acc 85.4%
+no improvement for 12/20 epochs
+epoch 49/200 | train loss 0.0812 acc 86.6% | val loss 0.0566 acc 85.5%
+no improvement for 13/20 epochs
+epoch 50/200 | train loss 0.0817 acc 86.4% | val loss 0.0558 acc 85.6%
+no improvement for 14/20 epochs
+epoch 51/200 | train loss 0.0811 acc 86.7% | val loss 0.0558 acc 85.6%
+no improvement for 15/20 epochs
+epoch 52/200 | train loss 0.0809 acc 86.7% | val loss 0.0555 acc 85.6%
+no improvement for 16/20 epochs
+epoch 53/200 | train loss 0.0806 acc 86.8% | val loss 0.0559 acc 85.7%
+no improvement for 17/20 epochs
+epoch 54/200 | train loss 0.0805 acc 86.8% | val loss 0.0557 acc 85.7%
+no improvement for 18/20 epochs
+epoch 55/200 | train loss 0.0801 acc 86.9% | val loss 0.0561 acc 85.6%
+no improvement for 19/20 epochs
+epoch 56/200 | train loss 0.0801 acc 86.9% | val loss 0.0556 acc 85.7%
+no improvement for 20/20 epochs
+early stopping: no improvement for 20 epochs
+best val loss 0.0523, checkpoint: C:\Users\Students\Box\BatNET 2024-2026\Models\110926V1\2_Classifier\run_20261109_160353\best_model.pt

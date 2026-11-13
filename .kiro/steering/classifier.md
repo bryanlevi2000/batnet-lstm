@@ -27,7 +27,13 @@ Run all scripts from the project root. `train.py` does not import from the infer
 - `PulseLSTM` applies, in order: a unidirectional LSTM, LayerNorm, dropout, masked attention pooling with attention dropout, then one `Linear(hidden, n_classes)`. Each output is an independent sigmoid head trained with BCE.
 - Training loss is `alpha * step_loss + (1 - alpha) * pooled_loss`, where alpha is `TARGET_REPLICATION_ALPHA`. Step loss is masked and divided by each sample's length. With alpha 0, step logits are not computed. Validation and inference use only the pooled output.
 - Uses AdamW and shuffles training batches only. Requires CUDA. DataLoaders use `num_workers=0`, because on Windows each worker would copy the in-RAM dataset.
-- After each epoch it logs the epoch line, then either `saved model (val loss X)` or `no improvement for k/PATIENCE epochs`. It stops early after `PATIENCE` epochs without improvement.
+- Learning rate schedule, set by `LR_SCHEDULER`:
+  - `"none"` (the default) keeps `LEARNING_RATE` constant for the whole run.
+  - `"plateau"` uses `torch.optim.lr_scheduler.ReduceLROnPlateau` (`make_scheduler` in `train.py`). Once per epoch, after validation, it multiplies the learning rate by `LR_FACTOR` when the validation loss has gone `LR_PATIENCE + 1` epochs in a row without a new best. The rate never goes below `LR_MIN`. "New best" is a strictly lower validation loss, the same test early stopping uses.
+  - Early stopping is independent of the schedule. With the defaults (`LR_PATIENCE = 5`, `PATIENCE = 20`) at most three reductions happen before training stops, so raise `PATIENCE` when turning `"plateau"` on.
+  - AdamW's weight decay is scaled by the learning rate, so decay weakens as the rate drops.
+  - The scheduler state is not stored in `best_model.pt`, and inference does not use it.
+- After each epoch it logs the epoch line, then either `saved model (val loss X)` or `no improvement for k/PATIENCE epochs`, then `learning rate reduced to X` if the scheduler lowered the rate. It stops early after `PATIENCE` epochs without improvement.
 - Output: `CLASSIFIER_OUTPUT_DIR/run_YYYYMMDD_HHMMSS/` containing `training_log.txt` and `best_model.pt`.
 
 ## Inference
@@ -51,7 +57,8 @@ Checkpoint and CSV formats are in `data-contracts.md`.
 
 ## Rules for this stage
 
-- Keep the modules short and simple. Do not add modules, class weighting, schedulers, gradient clipping, seeding, or mixed precision unless the user asks.
+- Keep the modules short and simple. Do not add modules, class weighting, other schedulers (the only one is `plateau`), or mixed precision unless the user asks.
+- Seeding, gradient clipping, per-epoch checkpoints, resume, `diagnostics.py`, `replay_epoch.py`, and the `INVESTIGATION` block in `config.py` are temporary code for the training-collapse investigation. They are listed in `INVESTIGATION_CHANGES.md` at the project root. Do not extend or remove them unless the user asks.
 - Keep inference preprocessing in the same order as `preprocess/pipeline.py::process_wav_file`, minus class filtering.
 - Shard inputs are already z-score normalized. Do not normalize them again.
 - Keep the WAV-level split as built. Do not re-split pulses.

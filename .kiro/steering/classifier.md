@@ -14,7 +14,7 @@ Folder: `classifier/`. An LSTM that labels each pulse with a class. All settings
 | `dataset.py` | `read_manifest`, `check_ram`, `load_split`, `PulseDataset`, `collate_fn` (training only) |
 | `model.py` | `PulseLSTM` |
 | `train.py` | Entry point: `python classifier/train.py` |
-| `inference.py` | Entry point: `python classifier/inference.py`. Also defines `run(wav_paths, predictions_path, failed_path)` |
+| `inference.py` | Entry point: `python classifier/inference.py`. Also defines `run(file_paths, predictions_path, failed_path, no_pulse_path)` |
 | `validation_inference.py` | Entry point: `python classifier/validation_inference.py` |
 
 Run all scripts from the project root. `train.py` does not import from the inference scripts, and they don't import from it. `validation_inference.py` reuses `inference.run`. Only `train.py` uses `dataset.py`.
@@ -38,20 +38,21 @@ Run all scripts from the project root. `train.py` does not import from the infer
 
 ## Inference
 
-- Finds WAVs recursively under `config.TEST_DIR`. Each WAV's parent folder name is its `ground_truth`.
-- Each WAV is processed in a worker process (`NUM_WORKERS`): stage 1 ZC extraction (`zc.pipeline._process_wav_unsafe`, including `clean_pulses`), PCHIP resampling, slope and position features, then z-scoring with `preprocess/normalization_stats.json`.
+- Finds WAV and ZC files (`.wav`, `.zc`, names ending in `#`) recursively under `config.TEST_DIR` with `zc.input_files.iter_input_files`. Each file's parent folder name is its `ground_truth`.
+- Each file is processed in a worker process (`NUM_WORKERS`): stage 1 (`zc.pipeline.process_file`, including `clean_pulses`), PCHIP resampling, slope and position features, then z-scoring with `preprocess/normalization_stats.json`.
 - Class-specific pulse filtering (`preprocess/filtering.py`) is not applied. No shards or intermediate files are written.
 - Uses the checkpoint's `feature_columns`, `max_sequence_length`, `model_args`, and `class_mapping`, not the current config. The feature columns must be in `NORMALIZATION_COLUMNS`.
 - Results stream back in sorted file order with a bounded number of files in flight. The model runs on the CPU, and rows are appended to `PREDICTIONS_PATH` every `BATCH_SIZE` samples. tqdm shows progress per WAV.
-- WAVs that raise an error are written to `FAILED_FILES_PATH` with columns `file` and `error`. A WAV with no pulses is not a failure; it just has no rows.
+- Files that raise an error are written to `FAILED_FILES_PATH` with columns `file` and `error`. A file with no pulses is not a failure; it has no rows and is written to `NO_PULSE_FILES_PATH` (column `file`). A file whose samples were all dropped for NaN is in neither list; the NaN count is printed.
+- ZC files have NaN `amplitude`. If the checkpoint's `feature_columns` include `amplitude`, every ZC sample is dropped as NaN.
 
 ## Validation inference
 
-- `validation_inference.py` runs the same pipeline as `inference.py` (`inference.run`) on the validation WAVs, so its output is directly comparable to the test predictions.
-- The file list is the unique `wav_path` values with `split == "validation"` in `TRAIN_SHARD_DIR/metadata.jsonl`, sorted and joined with `config.INPUT_DIR`. `INPUT_DIR` must still point at the training WAVs.
+- `validation_inference.py` runs the same pipeline as `inference.py` (`inference.run`) on the validation files (WAV or ZC), so its output is directly comparable to the test predictions.
+- The file list is the unique `wav_path` values with `split == "validation"` in `TRAIN_SHARD_DIR/metadata.jsonl`, sorted and joined with `config.INPUT_DIR`. `wav_path` is the metadata field name for any input file, WAV or ZC, and holds the full file name. `INPUT_DIR` must still point at the training files.
 - Unreadable metadata lines are skipped and counted. The script raises an error if the readable validation lines don't match the manifest's validation sample count.
-- `metadata.jsonl` only lists WAVs that kept at least one pulse after class filtering during the shard build. Validation WAVs with no surviving pulses are not included.
-- Writes `VAL_PREDICTIONS_PATH` and `VAL_FAILED_FILES_PATH`, in the same formats as `PREDICTIONS_PATH` and `FAILED_FILES_PATH`.
+- `metadata.jsonl` only lists files that kept at least one pulse after class filtering during the shard build. Validation files with no surviving pulses are not included.
+- Writes `VAL_PREDICTIONS_PATH`, `VAL_FAILED_FILES_PATH` and `VAL_NO_PULSE_FILES_PATH`, in the same formats as `PREDICTIONS_PATH`, `FAILED_FILES_PATH` and `NO_PULSE_FILES_PATH`.
 
 Checkpoint and CSV formats are in `data-contracts.md`.
 
@@ -59,7 +60,7 @@ Checkpoint and CSV formats are in `data-contracts.md`.
 
 - Keep the modules short and simple. Do not add modules, class weighting, other schedulers (the only one is `plateau`), or mixed precision unless the user asks.
 - Seeding, gradient clipping, per-epoch checkpoints, resume, `diagnostics.py`, `replay_epoch.py`, and the `INVESTIGATION` block in `config.py` are temporary code for the training-collapse investigation. They are listed in `INVESTIGATION_CHANGES.md` at the project root. Do not extend or remove them unless the user asks.
-- Keep inference preprocessing in the same order as `preprocess/pipeline.py::process_wav_file`, minus class filtering.
+- Keep inference preprocessing in the same order as `preprocess/pipeline.py::process_input_file`, minus class filtering.
 - Shard inputs are already z-score normalized. Do not normalize them again.
 - Keep the WAV-level split as built. Do not re-split pulses.
 - Do not start a training run from the agent shell. The user runs training and inference.

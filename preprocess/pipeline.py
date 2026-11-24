@@ -1,6 +1,5 @@
 
 # pipeline.py
-import os
 import sys
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -16,7 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 
-from zc.pipeline import process_wav
+from zc.pipeline import process_file
+from zc.input_files import iter_input_files, write_file_lists
 
 from filtering import (
     load_filter_config,
@@ -47,23 +47,8 @@ _WORKER_FILTER_CONFIG = None
 
 
 # ---------------------------------------------------------------------
-# File discovery and batching
+# Batching
 # ---------------------------------------------------------------------
-
-def iter_wav_files(input_dir):
-    """
-    Yield WAV file paths recursively without storing all paths in memory.
-    """
-
-    for root, dirs, files in os.walk(input_dir):
-
-        dirs.sort()
-
-        for filename in files:
-
-            if filename.lower().endswith(".wav"):
-                yield os.path.join(root, filename)
-
 
 def batched(iterable, batch_size):
     """
@@ -99,25 +84,40 @@ def initialize_worker(filter_config_path):
 
 
 # ---------------------------------------------------------------------
-# Process one WAV file
+# Process one input file (WAV or ZC)
 # ---------------------------------------------------------------------
 
-def process_wav_file(wav_path):
+def _result(file_path, status, dataframe=None, rejection_stats=None, error=None):
     """
-    Process one WAV file and normalize its resulting features.
+    Build the result of one file.
+
+    status is "processed" (rejection_stats is set, and dataframe is None
+    when class filtering removed every pulse), "no_pulses" (the file was
+    read but gave zero pulses) or "failed" (error is set).
     """
 
-    result = process_wav(wav_path)
+    return {
+        "file_path": str(file_path),
+        "status": status,
+        "dataframe": dataframe,
+        "rejection_stats": rejection_stats,
+        "error": error,
+    }
 
-    if result is None:
-        return None
 
-    pulses_df, metrics_df = result
+def _process_input_file_unsafe(file_path):
+    """
+    Process one input file and normalize its resulting features.
+
+    Raises an exception if the file cannot be read or processed.
+    """
+
+    pulses_df, metrics_df = process_file(file_path)
 
     if pulses_df.empty or metrics_df.empty:
-        return None
+        return _result(file_path, "no_pulses")
 
-    class_name = Path(wav_path).parent.name
+    class_name = Path(file_path).parent.name
 
     # Apply class-specific pulse filtering.
     filtered_pulses, _, rejection_stats = filter_file_pulses(
@@ -128,11 +128,11 @@ def process_wav_file(wav_path):
     )
 
     if filtered_pulses.empty:
-        return {
-            "wav_path": str(wav_path),
-            "dataframe": None,
-            "rejection_stats": rejection_stats,
-        }
+        return _result(
+            file_path,
+            "processed",
+            rejection_stats=rejection_stats,
+        )
 
     # Resample each pulse onto the fixed time grid.
     resampled_df = pchip_resample_pulses(
@@ -141,7 +141,7 @@ def process_wav_file(wav_path):
     )
 
     if resampled_df.empty:
-        return None
+        return _result(file_path, "no_pulses")
 
     # Calculate slope and position features.
     features_df = process_pulse_dataframe(
@@ -149,7 +149,7 @@ def process_wav_file(wav_path):
     )
 
     if features_df.empty:
-        return None
+        return _result(file_path, "no_pulses")
 
     # Apply z-score normalization.
     normalized_df = normalize_dataframe(
@@ -157,44 +157,46 @@ def process_wav_file(wav_path):
     )
 
     if normalized_df.empty:
-        return None
+        return _result(file_path, "no_pulses")
 
-    return {
-        "wav_path": str(wav_path),
-        "dataframe": normalized_df,
-        "rejection_stats": rejection_stats,
-    }
+    return _result(
+        file_path,
+        "processed",
+        dataframe=normalized_df,
+        rejection_stats=rejection_stats,
+    )
 
 
-# ---------------------------------------------------------------------
-# Process a batch of WAV files
-# ---------------------------------------------------------------------
-
-def process_wav_batch(wav_paths):
+def process_input_file(file_path):
     """
-    Process multiple WAV files inside one worker.
+    Process one input file. Never raises: a file that cannot be read or
+    processed returns status "failed" with the exception type and message.
+    """
 
-    Failed files are silently skipped.
+    try:
+        return _process_input_file_unsafe(file_path)
+
+    except Exception as error:
+        return _result(
+            file_path,
+            "failed",
+            error=f"{type(error).__name__}: {error}",
+        )
+
+
+# ---------------------------------------------------------------------
+# Process a batch of input files
+# ---------------------------------------------------------------------
+
+def process_file_batch(file_paths):
+    """
+    Process multiple input files inside one worker.
 
     Returns:
-        list: Successfully processed WAV file results.
+        list: One result per file.
     """
 
-    results = []
-
-    for wav_path in wav_paths:
-
-        try:
-
-            result = process_wav_file(wav_path)
-
-            if result is not None:
-                results.append(result)
-
-        except Exception:
-            continue
-
-    return results
+    return [process_input_file(path) for path in file_paths]
 
 
 # ---------------------------------------------------------------------
@@ -203,7 +205,9 @@ def process_wav_batch(wav_paths):
 
 def process_folder(input_dir=None):
     """
-    Recursively process WAV files using parallel processing.
+    Recursively process WAV and ZC files using parallel processing.
+
+    Yields one result per file, including failed and no-pulse files.
     """
 
     if input_dir is None:
@@ -224,7 +228,7 @@ def process_folder(input_dir=None):
         config.NUM_WORKERS * TASKS_PER_WORKER,
     )
 
-    wav_files = iter_wav_files(input_dir)
+    input_files = iter_input_files(input_dir)
 
     print(f"Input directory: {input_dir}")
     print(f"Workers: {config.NUM_WORKERS}")
@@ -239,13 +243,13 @@ def process_folder(input_dir=None):
     ) as executor:
 
         with tqdm(
-            desc="Processing WAV files",
+            desc="Processing files",
             unit="file",
         ) as progress:
 
             # Submit only a limited number of tasks at a time.
             task_batches = batched(
-                batched(wav_files, files_per_task),
+                batched(input_files, files_per_task),
                 tasks_per_batch,
             )
 
@@ -253,7 +257,7 @@ def process_folder(input_dir=None):
 
                 futures = {
                     executor.submit(
-                        process_wav_batch,
+                        process_file_batch,
                         paths,
                     ): len(paths)
                     for paths in task_batch
@@ -264,13 +268,7 @@ def process_folder(input_dir=None):
 
                     progress.update(futures[future])
 
-                    try:
-                        batch_results = future.result()
-
-                    except Exception:
-                        continue
-
-                    for result in batch_results:
+                    for result in future.result():
 
                         if result["dataframe"] is not None:
                             total_successful += 1
@@ -292,9 +290,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rejection_summary = {}
+    failed_files = []
+    no_pulse_files = []
     successful = 0
 
     for result in process_folder():
+
+        if result["status"] == "failed":
+            failed_files.append(
+                {"file": result["file_path"], "error": result["error"]}
+            )
+            continue
+
+        if result["status"] == "no_pulses":
+            no_pulse_files.append({"file": result["file_path"]})
+            continue
 
         # Accumulate rejection statistics by class.
         stats = result["rejection_stats"]
@@ -315,19 +325,21 @@ def main():
         if result["dataframe"] is None:
             continue
 
-        wav_path = Path(result["wav_path"])
+        file_path = Path(result["file_path"])
         df = result["dataframe"]
 
         # Preserve the input folder structure.
-        relative_path = wav_path.relative_to(
+        relative_path = file_path.relative_to(
             Path(config.INPUT_DIR)
         )
 
         # Create corresponding output directory.
+        # The CSV keeps the full input file name, for example
+        # recording.wav.csv or H9140021.26#.csv.
         csv_path = (
             output_dir
             / relative_path.parent
-            / f"{wav_path.stem}.csv"
+            / f"{file_path.name}.csv"
         )
 
         csv_path.parent.mkdir(
@@ -358,8 +370,18 @@ def main():
         rejection_output_path,
     )
 
+    # Save the failed and no-pulse file lists.
+    write_file_lists(
+        failed_files,
+        no_pulse_files,
+        config.PREPROCESS_FAILED_FILES_PATH,
+        config.PREPROCESS_NO_PULSE_FILES_PATH,
+    )
+
     print("\nPipeline complete.")
     print(f"Successfully processed: {successful:,}")
+    print(f"Failed files: {len(failed_files):,} (see {config.PREPROCESS_FAILED_FILES_PATH})")
+    print(f"No-pulse files: {len(no_pulse_files):,} (see {config.PREPROCESS_NO_PULSE_FILES_PATH})")
     print(f"Output directory: {output_dir}")
     print(f"Rejection summary: {rejection_output_path}")
 

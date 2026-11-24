@@ -1,11 +1,11 @@
 """Predict a class for every pulse in TEST_DIR. Run from the project root: python classifier/inference.py
 
-Worker processes run ZC extraction, PCHIP resampling, feature calculation and
-normalization on each WAV. Class-specific pulse filtering is not applied.
+Worker processes load each WAV or ZC file (ZC extraction for WAVs, parsing for .zc and # files),
+then run pulse cleanup, PCHIP resampling, feature calculation and normalization.
+Class-specific pulse filtering is not applied.
 The model runs on the CPU, and predictions are appended to the CSV batch by batch.
 """
 
-import os
 import sys
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
@@ -25,38 +25,33 @@ from model import PulseLSTM
 from preprocess.features import process_pulse_dataframe
 from preprocess.normalize import normalize_dataframe
 from preprocess.pchip import pchip_resample_pulses
-from zc.pipeline import _process_wav_unsafe
+from zc.input_files import iter_input_files, write_file_lists
+from zc.pipeline import process_file
 
 
 TASKS_PER_WORKER = 4
 
 
-def find_wavs(root):
-    """All WAV files under root, searched recursively, in sorted order."""
+def find_input_files(root):
+    """All WAV and ZC files under root, searched recursively, in sorted order."""
 
-    paths = []
-
-    for folder, dirs, files in os.walk(root):
-        dirs.sort()
-        paths += [Path(folder) / name for name in sorted(files) if name.lower().endswith(".wav")]
-
-    return paths
+    return list(iter_input_files(root))
 
 
-def extract_samples(wav_path, feature_columns, max_len):
-    """Preprocess one WAV. Returns (wav_path, [(pulse_id, sample)], nan_dropped, error)."""
+def extract_samples(file_path, feature_columns, max_len):
+    """Preprocess one WAV or ZC file. Returns (file_path, [(pulse_id, sample)], nan_dropped, error)."""
 
     try:
-        pulses, _ = _process_wav_unsafe(wav_path)
+        pulses, _ = process_file(file_path)
 
         if pulses.empty:
-            return wav_path, [], 0, None
+            return file_path, [], 0, None
 
         resampled = pchip_resample_pulses(pulses, config.PCHIP_TIME_INTERVAL)
         df = normalize_dataframe(process_pulse_dataframe(resampled))
 
     except Exception as error:
-        return wav_path, [], 0, f"{type(error).__name__}: {error}"
+        return file_path, [], 0, f"{type(error).__name__}: {error}"
 
     samples, dropped = [], 0
 
@@ -72,15 +67,15 @@ def extract_samples(wav_path, feature_columns, max_len):
         else:
             samples.append((int(pulse_id), sample))
 
-    return wav_path, samples, dropped, None
+    return file_path, samples, dropped, None
 
 
-def stream(executor, wav_paths, feature_columns, max_len):
+def stream(executor, file_paths, feature_columns, max_len):
     """Yield worker results in file order, keeping a bounded number of files in flight."""
 
     pending = deque()
 
-    for path in wav_paths:
+    for path in file_paths:
 
         pending.append(executor.submit(extract_samples, path, feature_columns, max_len))
 
@@ -92,7 +87,7 @@ def stream(executor, wav_paths, feature_columns, max_len):
 
 
 def write_batch(model, batch, classes, output_path):
-    """Predict a batch of (wav_path, pulse_id, sample) and append the rows to the CSV."""
+    """Predict a batch of (file_path, pulse_id, sample) and append the rows to the CSV."""
 
     samples = [torch.from_numpy(sample) for _, _, sample in batch]
     lengths = torch.tensor([len(sample) for sample in samples])
@@ -111,8 +106,11 @@ def write_batch(model, batch, classes, output_path):
     ], axis=1).to_csv(output_path, mode="a", header=False, index=False)
 
 
-def run(wav_paths, predictions_path, failed_path):
-    """Predict every pulse in wav_paths with the model at CHECKPOINT_PATH and write both CSVs."""
+def run(file_paths, predictions_path, failed_path, no_pulse_path):
+    """Predict every pulse in file_paths with the model at CHECKPOINT_PATH.
+
+    Writes the predictions CSV, the failed-files CSV, and the no-pulse-files CSV.
+    """
 
     checkpoint_path = Path(config.CHECKPOINT_PATH)
 
@@ -142,22 +140,24 @@ def run(wav_paths, predictions_path, failed_path):
         columns=["file", "pulse_id", "ground_truth", *classes, *[f"{c}_logit" for c in classes]]
     ).to_csv(output_path, index=False)
 
-    batch, failed = [], []
+    batch, failed, no_pulses = [], [], []
     predicted = dropped = 0
 
     with ProcessPoolExecutor(max_workers=config.NUM_WORKERS) as executor:
 
-        results = stream(executor, wav_paths, feature_columns, max_len)
+        results = stream(executor, file_paths, feature_columns, max_len)
 
-        for wav_path, samples, n_dropped, error in tqdm(
-            results, total=len(wav_paths), desc="Inference", unit="file"
+        for file_path, samples, n_dropped, error in tqdm(
+            results, total=len(file_paths), desc="Inference", unit="file"
         ):
 
             if error:
-                failed.append({"file": str(wav_path), "error": error})
+                failed.append({"file": str(file_path), "error": error})
+            elif not samples and not n_dropped:
+                no_pulses.append({"file": str(file_path)})
 
             dropped += n_dropped
-            batch += [(wav_path, pulse_id, sample) for pulse_id, sample in samples]
+            batch += [(file_path, pulse_id, sample) for pulse_id, sample in samples]
 
             if len(batch) >= config.BATCH_SIZE:
                 write_batch(model, batch, classes, output_path)
@@ -168,23 +168,22 @@ def run(wav_paths, predictions_path, failed_path):
         write_batch(model, batch, classes, output_path)
         predicted += len(batch)
 
-    failed_path = Path(failed_path)
-    failed_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(failed, columns=["file", "error"]).to_csv(failed_path, index=False)
+    write_file_lists(failed, no_pulses, failed_path, no_pulse_path)
 
     print(f"Saved {predicted:,} predictions to {output_path}")
     print(f"Dropped {dropped:,} samples with NaN values")
     print(f"{len(failed):,} failed files listed in {failed_path}")
+    print(f"{len(no_pulses):,} files with no pulses listed in {no_pulse_path}")
 
 
 def main():
 
-    wav_paths = find_wavs(config.TEST_DIR)
+    file_paths = find_input_files(config.TEST_DIR)
 
-    if not wav_paths:
-        raise FileNotFoundError(f"No WAV files found in {config.TEST_DIR}")
+    if not file_paths:
+        raise FileNotFoundError(f"No WAV or ZC files found in {config.TEST_DIR}")
 
-    run(wav_paths, config.PREDICTIONS_PATH, config.FAILED_FILES_PATH)
+    run(file_paths, config.PREDICTIONS_PATH, config.FAILED_FILES_PATH, config.NO_PULSE_FILES_PATH)
 
 
 if __name__ == "__main__":

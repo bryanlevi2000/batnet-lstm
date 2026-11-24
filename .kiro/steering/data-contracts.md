@@ -11,7 +11,8 @@ These formats are the interface between stages. A change to any of them must be 
 
 Written by `preprocess/pipeline.py` to `config.OUTPUT_DIR`, mirroring the folder structure of `config.INPUT_DIR`.
 
-- One CSV per WAV file, named `<wav_stem>.csv`, in the matching class subfolder.
+- One CSV per input file (WAV or ZC), named `<full file name>.csv` (for example `recording.wav.csv` or `H9140021.26#.csv`), in the matching class subfolder. The full name keeps files that share a stem apart.
+- Files that fail and files with zero pulses are not written. They are listed in `config.PREPROCESS_FAILED_FILES_PATH` (`file`, `error`) and `config.PREPROCESS_NO_PULSE_FILES_PATH` (`file`).
 - One row per pulse point. Columns include `time_us`, `freq_hz`, `amplitude`, `pulse_id`, `status`, `slope`, `position`.
 - `freq_hz` and `amplitude` are already z-score normalized using `preprocess/normalization_stats.json`. Do not normalize them again.
 - `pulse_id` identifies each pulse within a file. Values greater than 0 are real pulses.
@@ -44,7 +45,9 @@ Array contents for one shard:
 
 Sample length varies per pulse. Each sample is resampled onto a fixed time grid (`config.PCHIP_TIME_INTERVAL`, currently 100 us), so its length depends on pulse duration. Any model must handle variable-length sequences, for example with padding plus a mask or with packed sequences.
 
-`metadata.jsonl` fields per sample: `split`, `wav_path` (relative to `INPUT_DIR`, POSIX style), `pulse_id`, `label`, `num_time_steps`, `shard`, `sample_index`. Use `wav_path` to trace a sample back to its recording.
+`metadata.jsonl` fields per sample: `split`, `wav_path` (relative to `INPUT_DIR`, POSIX style), `pulse_id`, `label`, `num_time_steps`, `shard`, `sample_index`. Use `wav_path` to trace a sample back to its recording. The field name is kept for compatibility with existing shards. It holds the path of any input file, WAV or ZC.
+
+`build_shards.py` also writes `config.SHARD_FAILED_FILES_PATH` (`file`, `error`) and `config.SHARD_NO_PULSE_FILES_PATH` (`file`) at the end of each run. They list files from both splits.
 
 ## Stage 4 output: checkpoint
 
@@ -60,21 +63,40 @@ Sample length varies per pulse. Each sample is resampled onto a fixed time grid 
 
 ## Stage 4 output: predictions CSV
 
-Written by `classifier/inference.py` to `config.PREDICTIONS_PATH`. There is one row per pulse found in the WAVs under `config.TEST_DIR`, in sorted file order, then pulse order. Pulses do not go through class-specific filtering. Samples with NaN are dropped. Columns, in order:
+Written by `classifier/inference.py` to `config.PREDICTIONS_PATH`. There is one row per pulse found in the WAV and ZC files under `config.TEST_DIR`, in sorted file order, then pulse order. Pulses do not go through class-specific filtering. Samples with NaN are dropped. Columns, in order:
 
-1. `file`: full WAV path
+1. `file`: full input file path
 2. `pulse_id`
-3. `ground_truth`: WAV parent folder name
+3. `ground_truth`: input file parent folder name
 4. One column per class, named with the class name, holding the sigmoid confidence
 5. One `<class>_logit` column per class, holding the raw logit
 
 Both per-class groups are ordered by the checkpoint's label index.
 
-`classifier/validation_inference.py` writes the same format to `config.VAL_PREDICTIONS_PATH` for the validation WAVs listed in `TRAIN_SHARD_DIR/metadata.jsonl`.
+`classifier/validation_inference.py` writes the same format to `config.VAL_PREDICTIONS_PATH` for the validation files listed in `TRAIN_SHARD_DIR/metadata.jsonl`.
 
-## Stage 4 output: failed files CSV
+## Failed files and no-pulse files CSVs
 
-Written by `classifier/inference.py` to `config.FAILED_FILES_PATH`, and by `validation_inference.py` to `config.VAL_FAILED_FILES_PATH`. Columns are `file` (full WAV path) and `error` (exception type and message). It is written even when empty. WAVs with no detected pulses are not listed.
+Every stage that processes a folder writes the same two formats, each even when empty:
+
+- Failed files: columns `file` (full path) and `error` (exception type and message). A failed file could not be read or processed. For ZC files, a bad header gives `ZCFileError`.
+- No-pulse files: column `file` (full path). The file was read, but zero pulses survived.
+
+Paths in `config.py`:
+
+| Script | Failed files | No-pulse files |
+|---|---|---|
+| `preprocess/pipeline.py` | `PREPROCESS_FAILED_FILES_PATH` | `PREPROCESS_NO_PULSE_FILES_PATH` |
+| `preprocess/get_normalization_stats.py` | `STATS_FAILED_FILES_PATH` | `STATS_NO_PULSE_FILES_PATH` |
+| `dataset_creation/build_shards.py` | `SHARD_FAILED_FILES_PATH` | `SHARD_NO_PULSE_FILES_PATH` |
+| `classifier/inference.py` | `FAILED_FILES_PATH` | `NO_PULSE_FILES_PATH` |
+| `classifier/validation_inference.py` | `VAL_FAILED_FILES_PATH` | `VAL_NO_PULSE_FILES_PATH` |
+
+Files where class filtering removes every pulse are not listed. They appear in the rejection summary.
+
+## Input points (stage 1 output)
+
+WAV and ZC files both produce a DataFrame with `time_us`, `freq_hz` and `amplitude` before pulse detection. `amplitude` is NaN for ZC files.
 
 ## Normalization statistics
 

@@ -1,6 +1,5 @@
 # get_normalization_stats.py
 import json
-import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import islice
@@ -17,7 +16,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 
-from zc.pipeline import process_wav
+from zc.pipeline import process_file
+from zc.input_files import iter_input_files, write_file_lists
 
 from filtering import (
     load_filter_config,
@@ -49,23 +49,8 @@ _WORKER_FILTER_CONFIG = None
 
 
 # ---------------------------------------------------------------------
-# File discovery and batching
+# Batching
 # ---------------------------------------------------------------------
-
-def iter_wav_files(input_dir):
-    """
-    Yield WAV file paths recursively without storing all paths in memory.
-    """
-
-    for root, dirs, files in os.walk(input_dir):
-
-        dirs.sort()
-
-        for filename in files:
-
-            if filename.lower().endswith(".wav"):
-                yield os.path.join(root, filename)
-
 
 def batched(iterable, batch_size):
     """
@@ -101,30 +86,29 @@ def initialize_worker(filter_config_path):
 
 
 # ---------------------------------------------------------------------
-# Process one WAV file
+# Process one input file (WAV or ZC)
 # ---------------------------------------------------------------------
 
-def process_wav_for_stats(wav_path):
+def process_file_for_stats(file_path):
     """
-    Process one WAV file and calculate per-column statistics.
+    Process one input file and calculate per-column statistics.
+
+    Raises an exception if the file cannot be read or processed.
 
     Returns:
-        status: "success", "empty", or "failed"
+        status: "success", "no_pulses" (the file gave zero pulses), or
+            "empty" (no pulses were left after class filtering or
+            resampling)
         stats: Dictionary containing count, mean, and M2 per column.
     """
 
-    result = process_wav(wav_path)
-
-    if result is None:
-        return "failed", None
-
-    pulses_df, metrics_df = result
+    pulses_df, metrics_df = process_file(file_path)
 
     if pulses_df.empty or metrics_df.empty:
-        return "empty", None
+        return "no_pulses", None
 
-    # Class label comes from the WAV file's parent directory.
-    class_name = Path(wav_path).parent.name
+    # Class label comes from the file's parent directory.
+    class_name = Path(file_path).parent.name
 
     # Apply class-specific pulse filtering.
     filtered_pulses, _, _ = filter_file_pulses(
@@ -230,15 +214,22 @@ def combine_stats(current, new):
 
 
 # ---------------------------------------------------------------------
-# Process a batch of WAV files
+# Process a batch of input files
 # ---------------------------------------------------------------------
 
-def process_wav_batch(wav_paths):
+def process_file_batch(file_paths):
     """
-    Process multiple WAV files inside one worker.
+    Process multiple input files inside one worker.
 
     Statistics are combined inside the worker before being returned,
     reducing the amount of data transferred between processes.
+
+    Returns:
+        successful: Number of files that contributed statistics.
+        empty: Number of files with no pulses left after filtering.
+        no_pulse_files: List of {"file"} rows for files with zero pulses.
+        failed_files: List of {"file", "error"} rows for failed files.
+        batch_stats: Combined statistics for the batch.
     """
 
     batch_stats = {
@@ -248,18 +239,19 @@ def process_wav_batch(wav_paths):
 
     successful = 0
     empty = 0
-    failed = 0
+    no_pulse_files = []
+    failed_files = []
 
-    for wav_path in wav_paths:
+    for file_path in file_paths:
 
         try:
 
-            status, file_stats = process_wav_for_stats(
-                wav_path
+            status, file_stats = process_file_for_stats(
+                file_path
             )
 
-            if status == "failed":
-                failed += 1
+            if status == "no_pulses":
+                no_pulse_files.append({"file": str(file_path)})
                 continue
 
             if status == "empty":
@@ -277,17 +269,22 @@ def process_wav_batch(wav_paths):
 
         except Exception as error:
 
-            failed += 1
+            failed_files.append({
+                "file": str(file_path),
+                "error": f"{type(error).__name__}: {error}",
+            })
 
             print(
-                f"\nError processing {wav_path}: {error}",
+                f"\nError processing {file_path}: "
+                f"{type(error).__name__}: {error}",
                 flush=True,
             )
 
     return (
         successful,
         empty,
-        failed,
+        no_pulse_files,
+        failed_files,
         batch_stats,
     )
 
@@ -317,10 +314,11 @@ def main():
 
     successful_files = 0
     empty_files = 0
-    failed_files = 0
+    no_pulse_files = []
+    failed_files = []
 
-    # Lazy WAV file discovery.
-    wav_files = iter_wav_files(input_dir)
+    # Lazy WAV and ZC file discovery.
+    input_files = iter_input_files(input_dir)
 
     print(f"Input directory: {input_dir}")
     print(f"Workers: {config.NUM_WORKERS}")
@@ -333,15 +331,15 @@ def main():
         initargs=(str(FILTER_CONFIG_PATH),),
     ) as executor:
 
-        # Progress bar tracks individual WAV files.
+        # Progress bar tracks individual input files.
         with tqdm(
-            desc="Processing WAV files",
+            desc="Processing files",
             unit="file",
         ) as progress:
 
             # Create a limited number of tasks at a time.
             task_batches = batched(
-                batched(wav_files, files_per_task),
+                batched(input_files, files_per_task),
                 tasks_per_batch,
             )
 
@@ -349,7 +347,7 @@ def main():
 
                 futures = [
                     executor.submit(
-                        process_wav_batch,
+                        process_file_batch,
                         paths,
                     )
                     for paths in task_batch
@@ -361,13 +359,15 @@ def main():
                     (
                         successful,
                         empty,
-                        failed,
+                        batch_no_pulse_files,
+                        batch_failed_files,
                         batch_stats,
                     ) = future.result()
 
                     successful_files += successful
                     empty_files += empty
-                    failed_files += failed
+                    no_pulse_files += batch_no_pulse_files
+                    failed_files += batch_failed_files
 
                     # Combine worker statistics.
                     for column in config.NORMALIZATION_COLUMNS:
@@ -377,11 +377,25 @@ def main():
                             batch_stats[column],
                         )
 
-                    # Update progress using the number of WAVs
+                    # Update progress using the number of files
                     # completed by this worker.
                     progress.update(
-                        successful + empty + failed
+                        successful
+                        + empty
+                        + len(batch_no_pulse_files)
+                        + len(batch_failed_files)
                     )
+
+    # -----------------------------------------------------------------
+    # Save the failed and no-pulse file lists
+    # -----------------------------------------------------------------
+
+    write_file_lists(
+        failed_files,
+        no_pulse_files,
+        config.STATS_FAILED_FILES_PATH,
+        config.STATS_NO_PULSE_FILES_PATH,
+    )
 
     # -----------------------------------------------------------------
     # Calculate final normalization statistics
@@ -440,7 +454,8 @@ def main():
     total_files = (
         successful_files
         + empty_files
-        + failed_files
+        + len(no_pulse_files)
+        + len(failed_files)
     )
 
     print("\nProcessing complete.")
@@ -448,7 +463,8 @@ def main():
     print(f"Total processed:   {total_files:,}")
     print(f"Successful files:  {successful_files:,}")
     print(f"Empty files:       {empty_files:,}")
-    print(f"Failed files:      {failed_files:,}")
+    print(f"No-pulse files:    {len(no_pulse_files):,} (see {config.STATS_NO_PULSE_FILES_PATH})")
+    print(f"Failed files:      {len(failed_files):,} (see {config.STATS_FAILED_FILES_PATH})")
 
     print(f"\nStatistics saved to: {OUTPUT_PATH}")
 

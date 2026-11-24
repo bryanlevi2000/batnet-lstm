@@ -3,8 +3,8 @@
 Run from the project root:
     python dataset_creation/build_shards.py
 
-Each positive pulse_id is one sample. All pulses from a WAV stay in the
-same train/validation split. Each shard has at most SHARD_NUM_SAMPLES samples.
+Each positive pulse_id is one sample. All pulses from a WAV or ZC file stay in
+the same train/validation split. Each shard has at most SHARD_NUM_SAMPLES samples.
 """
 
 import json
@@ -32,6 +32,8 @@ import config
 
 import preprocess.pipeline as pipeline
 
+from zc.input_files import iter_input_files, write_file_lists
+
 from filtering import save_rejection_summary
 
 
@@ -44,25 +46,17 @@ TASKS_PER_WORKER = 4
 
 
 # ---------------------------------------------------------------------
-# WAV discovery and splitting
+# Input file discovery and splitting
 # ---------------------------------------------------------------------
 
-def find_wavs(input_dir):
-    """Find WAV files and split them by class."""
+def find_input_files(input_dir):
+    """Find WAV and ZC files and split them by class."""
 
     files_by_class = defaultdict(list)
 
-    for root, dirs, files in os.walk(input_dir):
+    for path in iter_input_files(input_dir):
 
-        dirs.sort()
-
-        for name in sorted(files):
-
-            if name.lower().endswith(".wav"):
-
-                path = Path(root) / name
-
-                files_by_class[path.parent.name].append(path)
+        files_by_class[path.parent.name].append(path)
 
     train = []
     validation = []
@@ -104,16 +98,10 @@ def initialize_worker():
     )
 
 
-def process_wav(path):
-    """Process one WAV file."""
+def process_file(path):
+    """Process one WAV or ZC file. Never raises; see pipeline.process_input_file."""
 
-    try:
-
-        return str(path), pipeline.process_wav_file(str(path))
-
-    except Exception:
-
-        return str(path), None
+    return pipeline.process_input_file(str(path))
 
 
 # ---------------------------------------------------------------------
@@ -154,9 +142,9 @@ def load_progress(manifest_path, metadata_path):
 
                 metadata_end = entry["metadata_end"]
 
-                for wav, n in entry["file_counts"].items():
+                for file_path, n in entry["file_counts"].items():
 
-                    counts[(split, wav)] += n
+                    counts[(split, file_path)] += n
 
                 manifest_end = manifest.tell()
 
@@ -358,7 +346,7 @@ def write_shard(
 
 def process_split(
     split,
-    wavs,
+    input_files,
     input_dir,
     output_dir,
     labels_by_class,
@@ -367,6 +355,8 @@ def process_split(
     metadata_path,
     manifest_path,
     rejection_summary,
+    failed_files,
+    no_pulse_files,
 ):
 
     shard_index = shard_start
@@ -391,27 +381,27 @@ def process_split(
     ) as executor:
 
         with tqdm(
-            total=len(wavs),
-            desc=f"{split} WAVs",
+            total=len(input_files),
+            desc=f"{split} files",
             unit="file",
         ) as bar:
 
-            # Submit only a bounded number of WAV files at once.
+            # Submit only a bounded number of files at once.
 
             for start in range(
                 0,
-                len(wavs),
+                len(input_files),
                 max_in_flight
             ):
 
-                batch = wavs[
+                batch = input_files[
                     start:start + max_in_flight
                 ]
 
                 futures = [
 
                     executor.submit(
-                        process_wav,
+                        process_file,
                         path
                     )
 
@@ -419,15 +409,29 @@ def process_split(
 
                 ]
 
-                # Collect completed WAV files.
+                # Collect completed files.
 
                 for future in as_completed(futures):
 
                     bar.update(1)
 
-                    wav_path, result = future.result()
+                    result = future.result()
 
-                    if result is None:
+                    file_path = result["file_path"]
+
+                    if result["status"] == "failed":
+
+                        failed_files.append({
+                            "file": file_path,
+                            "error": result["error"],
+                        })
+
+                        continue
+
+                    if result["status"] == "no_pulses":
+
+                        no_pulse_files.append({"file": file_path})
+
                         continue
 
                     # Accumulate pulse rejection counts by class.
@@ -448,17 +452,17 @@ def process_split(
                         continue
 
                     relative_path = (
-                        Path(wav_path)
+                        Path(file_path)
                         .resolve()
                         .relative_to(input_dir.resolve())
                         .as_posix()
                     )
 
-                    class_name = Path(wav_path).parent.name
+                    class_name = Path(file_path).parent.name
 
                     label = labels_by_class[class_name]
 
-                    # Number of samples already committed for this WAV.
+                    # Number of samples already committed for this file.
 
                     skip = committed_counts[
                         (split, relative_path)
@@ -568,9 +572,9 @@ def main():
         exist_ok=True
     )
 
-    # Discover WAV files and create class-stratified splits.
+    # Discover WAV and ZC files and create class-stratified splits.
 
-    train_wavs, val_wavs, class_names = find_wavs(
+    train_files, val_files, class_names = find_input_files(
         input_dir
     )
 
@@ -640,21 +644,23 @@ def main():
         metadata_path
     )
 
-    print(f"Training WAVs: {len(train_wavs):,}")
+    print(f"Training files: {len(train_files):,}")
 
-    print(f"Validation WAVs: {len(val_wavs):,}")
+    print(f"Validation files: {len(val_files):,}")
 
     print(f"Features: {config.NORMALIZATION_COLUMNS}")
 
     print(f"Samples per shard: {config.SHARD_NUM_SAMPLES:,}")
 
     rejection_summary = {}
+    failed_files = []
+    no_pulse_files = []
 
     # Process training data.
 
     process_split(
         "train",
-        train_wavs,
+        train_files,
         input_dir,
         output_dir,
         labels_by_class,
@@ -663,6 +669,8 @@ def main():
         metadata_path,
         manifest_path,
         rejection_summary,
+        failed_files,
+        no_pulse_files,
     )
 
     # Process validation data.
@@ -671,7 +679,7 @@ def main():
 
         process_split(
             "validation",
-            val_wavs,
+            val_files,
             input_dir,
             output_dir,
             labels_by_class,
@@ -680,6 +688,8 @@ def main():
             metadata_path,
             manifest_path,
             rejection_summary,
+            failed_files,
+            no_pulse_files,
         )
 
     # Save pulse rejection counts by class for both splits.
@@ -696,8 +706,19 @@ def main():
         rejection_path
     )
 
+    # Save the failed and no-pulse file lists for both splits.
+
+    write_file_lists(
+        failed_files,
+        no_pulse_files,
+        config.SHARD_FAILED_FILES_PATH,
+        config.SHARD_NO_PULSE_FILES_PATH,
+    )
+
     print("\nShard creation complete.")
     print(f"Rejection summary: {rejection_path}")
+    print(f"Failed files: {len(failed_files):,} (see {config.SHARD_FAILED_FILES_PATH})")
+    print(f"No-pulse files: {len(no_pulse_files):,} (see {config.SHARD_NO_PULSE_FILES_PATH})")
 
 
 if __name__ == "__main__":

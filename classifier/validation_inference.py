@@ -1,8 +1,8 @@
-"""Run the inference pipeline on every validation WAV.
+"""Run the inference pipeline on every validation file (WAV or ZC).
 Run from the project root: python classifier/validation_inference.py
 
 The validation files are listed in TRAIN_SHARD_DIR/metadata.jsonl, relative to
-INPUT_DIR, so INPUT_DIR must still point at the training WAVs.
+INPUT_DIR, so INPUT_DIR must still point at the training files.
 """
 
 import json
@@ -42,12 +42,14 @@ def main():
             f"but the manifest lists {expected:,}."
         )
 
-    wav_paths = sorted({row["wav_path"] for row in rows})
+    # "wav_path" is the metadata field name for any input file, WAV or ZC.
+    file_paths = sorted({row["wav_path"] for row in rows})
 
     run(
-        [Path(config.INPUT_DIR) / path for path in wav_paths],
+        [Path(config.INPUT_DIR) / path for path in file_paths],
         config.VAL_PREDICTIONS_PATH,
         config.VAL_FAILED_FILES_PATH,
+        config.VAL_NO_PULSE_FILES_PATH,
     )
 
 

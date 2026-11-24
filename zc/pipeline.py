@@ -16,6 +16,8 @@ import config
 # Local module imports (since they are now in the same 'zc' folder)
 from .denoise import denoise_audio
 from .zc_extraction import extract_zc
+from .zc_loader import load_zc_points
+from .input_files import is_wav_file, iter_input_files
 from .pulse_detection import filter_zc_linearity, greedy_walk
 from .pulse_cleanup import (
     filter_pulse_tails,
@@ -168,10 +170,11 @@ def calculate_all_metrics(pulses_df):
 
 
 # ============================================================
-# PROCESS ONE WAV FILE
+# LOAD ZC POINTS FROM ONE FILE
 # ============================================================
 
-def _process_wav_unsafe(source_path):
+def load_wav_points(source_path):
+    """Read a WAV file and return its ZC points (time_us, freq_hz, amplitude)."""
 
     source_path = Path(source_path)
 
@@ -209,7 +212,7 @@ def _process_wav_unsafe(source_path):
         hysteresis_percentile=config.HYSTERESIS_PERCENTILE
     )
 
-    df = pd.DataFrame(
+    return pd.DataFrame(
         zc_data,
         columns=[
             "time_us",
@@ -217,6 +220,29 @@ def _process_wav_unsafe(source_path):
             "amplitude"
         ]
     )
+
+
+def load_points(source_path):
+    """Return the ZC points of a WAV or ZC (.zc, #) file.
+
+    Raises an exception if the file cannot be read.
+    """
+
+    if is_wav_file(source_path):
+        return load_wav_points(source_path)
+
+    return load_zc_points(source_path)
+
+
+# ============================================================
+# CLEAN ZC POINTS INTO PULSES (WAV AND ZC FILES)
+# ============================================================
+
+def process_points(df):
+    """Group ZC points into pulses, clean them, and calculate their metrics.
+
+    Returns (pulses_df, metrics_df). Both are empty when no pulse is found.
+    """
 
     # --------------------------------------------------------
     # Local linearity
@@ -280,13 +306,18 @@ def _process_wav_unsafe(source_path):
     return pulses_df, metrics_df
 
 
-def process_wav(source_path):
-    """Process one WAV file. Returns None (silently) if anything fails."""
+# ============================================================
+# PROCESS ONE FILE
+# ============================================================
 
-    try:
-        return _process_wav_unsafe(source_path)
-    except Exception:
-        return None
+def process_file(source_path):
+    """Process one WAV or ZC file into (pulses_df, metrics_df).
+
+    Raises an exception if the file cannot be read or processed. A readable
+    file with no pulses returns empty dataframes.
+    """
+
+    return process_points(load_points(source_path))
 
 
 # ============================================================
@@ -298,19 +329,14 @@ def main():
     input_dir = Path(config.INPUT_DIR)
 
     # --------------------------------------------------------
-    # Find all WAV files
+    # Find all WAV and ZC files
     # --------------------------------------------------------
 
-    wav_files = [
-        path
-        for path in input_dir.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() == ".wav"
-    ]
+    input_files = list(iter_input_files(input_dir))
 
-    print(f"Found {len(wav_files):,} WAV files.")
+    print(f"Found {len(input_files):,} WAV and ZC files.")
 
-    if not wav_files:
+    if not input_files:
         return {}, {}
 
     # --------------------------------------------------------
@@ -319,38 +345,41 @@ def main():
 
     pulses_by_file = {}
     metrics_by_file = {}
+    failed = 0
 
     with ProcessPoolExecutor(
         max_workers=config.NUM_WORKERS
     ) as executor:
 
         future_to_path = {
-            executor.submit(process_wav, wav_path): wav_path
-            for wav_path in wav_files
+            executor.submit(process_file, path): path
+            for path in input_files
         }
 
         with tqdm(
             total=len(future_to_path),
-            desc="Processing WAV files",
+            desc="Processing files",
             unit="file"
         ) as progress:
 
             for future in as_completed(future_to_path):
 
-                wav_path = future_to_path[future]
+                path = future_to_path[future]
 
                 try:
-                    result = future.result()
-                except Exception:
-                    result = None
-
-                # Skipped files are simply left out of the results
-                if result is not None:
-                    pulses_df, metrics_df = result
-                    pulses_by_file[wav_path] = pulses_df
-                    metrics_by_file[wav_path] = metrics_df
+                    pulses_df, metrics_df = future.result()
+                except Exception as error:
+                    # Failed files are left out of the results
+                    failed += 1
+                    tqdm.write(f"Failed: {path}: {type(error).__name__}: {error}")
+                else:
+                    # Files with no pulses are kept, with empty dataframes
+                    pulses_by_file[path] = pulses_df
+                    metrics_by_file[path] = metrics_df
 
                 progress.update(1)
+
+    print(f"Failed files: {failed:,}")
 
     return pulses_by_file, metrics_by_file
 
@@ -367,25 +396,20 @@ def main():
 #     output_dir.mkdir(parents=True, exist_ok=True)
 
 #     # --------------------------------------------------------
-#     # Find all WAV files
+#     # Find all WAV and ZC files
 #     # --------------------------------------------------------
 
-#     wav_files = [
-#         path
-#         for path in input_dir.rglob("*")
-#         if path.is_file()
-#         and path.suffix.lower() == ".wav"
-#     ]
+#     input_files = list(iter_input_files(input_dir))
 
-#     print(f"Found {len(wav_files):,} WAV files total.")
+#     print(f"Found {len(input_files):,} WAV and ZC files total.")
 
-#     if not wav_files:
+#     if not input_files:
 #         return {}, {}
 
 #     # --- QUICK CHECK MODIFICATION ---
 #     # Limit to the first 10 files for testing purposes
-#     wav_files = wav_files[:10]
-#     print(f"Test mode: Processing only the first {len(wav_files)} file(s).")
+#     input_files = input_files[:10]
+#     print(f"Test mode: Processing only the first {len(input_files)} file(s).")
 
 #     # --------------------------------------------------------
 #     # Process files in parallel
@@ -399,33 +423,33 @@ def main():
 #     ) as executor:
 
 #         future_to_path = {
-#             executor.submit(process_wav, wav_path): wav_path
-#             for wav_path in wav_files
+#             executor.submit(process_file, input_path): input_path
+#             for input_path in input_files
 #         }
 
 #         with tqdm(
 #             total=len(future_to_path),
-#             desc="Processing WAV files",
+#             desc="Processing files",
 #             unit="file"
 #         ) as progress:
 
 #             for future in as_completed(future_to_path):
 
-#                 wav_path = future_to_path[future]
+#                 input_path = future_to_path[future]
 #                 pulses_df, metrics_df = future.result()
 
-#                 pulses_by_file[wav_path] = pulses_df
-#                 metrics_by_file[wav_path] = metrics_df
+#                 pulses_by_file[input_path] = pulses_df
+#                 metrics_by_file[input_path] = metrics_df
 
 #                 # --- WRITE CSV FILES FOR INSPECTION ---
-#                 stem = wav_path.stem
-#                 pulses_csv_path = output_dir / f"{stem}_pulses.csv"
-#                 metrics_csv_path = output_dir / f"{stem}_metrics.csv"
+#                 name = input_path.name
+#                 pulses_csv_path = output_dir / f"{name}_pulses.csv"
+#                 metrics_csv_path = output_dir / f"{name}_metrics.csv"
 
 #                 pulses_df.to_csv(pulses_csv_path, index=False)
 #                 metrics_df.to_csv(metrics_csv_path, index=False)
                 
-#                 print(f"\nSaved CSVs for {stem} to {output_dir}/")
+#                 print(f"\nSaved CSVs for {name} to {output_dir}/")
 
 #                 progress.update(1)
 

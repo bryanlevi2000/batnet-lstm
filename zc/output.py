@@ -13,7 +13,7 @@ def write_pulses(
 ):
     """
     Write accepted pulses either as individual CSV files or as one
-    combined CSV file per WAV file.
+    combined CSV file per input file.
 
     Parameters
     ----------
@@ -24,15 +24,15 @@ def write_pulses(
         Root directory where CSVs will be written.
 
     source_path : str or Path
-        Path of the original WAV file being processed.
+        Path of the original WAV or ZC file being processed.
 
     input_dir : str or Path
         Root input directory. The relative directory structure of the
-        original WAV file will be preserved in the output directory.
+        original file will be preserved in the output directory.
 
     output_mode : str
         "individual" = one CSV per pulse.
-        "combined" = one CSV per WAV file.
+        "combined" = one CSV per input file.
 
     Returns
     -------
@@ -59,8 +59,9 @@ def write_pulses(
     target_dir = output_dir / relative_dir
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Original WAV filename without extension
-    base_name = source_path.stem
+    # Full original filename, including its extension, so that files
+    # sharing a stem (recording.wav, recording.zc) do not overwrite each other
+    base_name = source_path.name
 
     # ------------------------------------------------------------
     # Combined mode

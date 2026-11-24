@@ -17,6 +17,8 @@ import config
 # Local module imports (since they are now in the same 'zc' folder)
 from denoise import denoise_audio
 from zc_extraction import extract_zc
+from zc_loader import load_zc_points
+from input_files import is_wav_file, iter_input_files
 from pulse_detection import filter_zc_linearity, greedy_walk
 from pulse_cleanup import (
     filter_pulse_tails,
@@ -26,23 +28,25 @@ from output import write_pulses
 
 
 # ============================================================
-# PROCESS ONE WAV FILE
+# LOAD ZC POINTS FROM ONE WAV OR ZC FILE
 # ============================================================
 
-def process_wav(source_path):
+def load_points(source_path, times):
+    """Return the ZC points of a WAV or ZC file and add the time spent to times."""
 
-    source_path = Path(source_path)
+    # --------------------------------------------------------
+    # ZC files (.zc or #) are parsed directly
+    # --------------------------------------------------------
 
-    times = {
-        "read_wav": 0.0,
-        "denoising": 0.0,
-        "zc_extraction": 0.0,
-        "local_linearity": 0.0,
-        "greedy_walk": 0.0,
-        "pulse_tail_filter": 0.0,
-        "pulse_filtering": 0.0,
-        "csv_writing": 0.0,
-    }
+    if not is_wav_file(source_path):
+
+        start = time.perf_counter()
+
+        df = load_zc_points(source_path)
+
+        times["read_zc"] = time.perf_counter() - start
+
+        return df
 
     # --------------------------------------------------------
     # Read WAV
@@ -98,6 +102,35 @@ def process_wav(source_path):
     )
 
     times["zc_extraction"] = time.perf_counter() - start
+
+    return df
+
+
+# ============================================================
+# PROCESS ONE FILE
+# ============================================================
+
+def process_file(source_path):
+
+    source_path = Path(source_path)
+
+    times = {
+        "read_wav": 0.0,
+        "read_zc": 0.0,
+        "denoising": 0.0,
+        "zc_extraction": 0.0,
+        "local_linearity": 0.0,
+        "greedy_walk": 0.0,
+        "pulse_tail_filter": 0.0,
+        "pulse_filtering": 0.0,
+        "csv_writing": 0.0,
+    }
+
+    # --------------------------------------------------------
+    # Load ZC points (WAV or ZC file)
+    # --------------------------------------------------------
+
+    df = load_points(source_path, times)
 
     # --------------------------------------------------------
     # Local linearity
@@ -196,19 +229,14 @@ def main():
     input_dir = Path(config.INPUT_DIR)
 
     # --------------------------------------------------------
-    # Find all WAV files
+    # Find all WAV and ZC files
     # --------------------------------------------------------
 
-    wav_files = [
-        path
-        for path in input_dir.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() == ".wav"
-    ]
+    input_files = list(iter_input_files(input_dir))
 
-    print(f"Found {len(wav_files):,} WAV files.")
+    print(f"Found {len(input_files):,} WAV and ZC files.")
 
-    if not wav_files:
+    if not input_files:
         return
 
     # --------------------------------------------------------
@@ -217,6 +245,7 @@ def main():
 
     total_times = {
         "read_wav": 0.0,
+        "read_zc": 0.0,
         "denoising": 0.0,
         "zc_extraction": 0.0,
         "local_linearity": 0.0,
@@ -227,6 +256,7 @@ def main():
     }
 
     total_pulses = 0
+    failed = 0
 
     # --------------------------------------------------------
     # Start wall-clock timer
@@ -242,25 +272,32 @@ def main():
         max_workers=config.NUM_WORKERS
     ) as executor:
 
-        futures = [
-            executor.submit(process_wav, wav_path)
-            for wav_path in wav_files
-        ]
+        future_to_path = {
+            executor.submit(process_file, path): path
+            for path in input_files
+        }
 
         with tqdm(
-            total=len(futures),
-            desc="Processing WAV files",
+            total=len(future_to_path),
+            desc="Processing files",
             unit="file"
         ) as progress:
 
-            for future in as_completed(futures):
+            for future in as_completed(future_to_path):
 
-                times, pulse_count = future.result()
+                path = future_to_path[future]
 
-                for step in total_times:
-                    total_times[step] += times[step]
+                try:
+                    times, pulse_count = future.result()
+                except Exception as error:
+                    # Failed files are reported and left out of the totals
+                    failed += 1
+                    tqdm.write(f"Failed: {path}: {type(error).__name__}: {error}")
+                else:
+                    for step in total_times:
+                        total_times[step] += times[step]
 
-                total_pulses += pulse_count
+                    total_pulses += pulse_count
 
                 progress.update(1)
 
@@ -274,7 +311,8 @@ def main():
     print("PIPELINE TIMING")
     print("=" * 60)
 
-    print(f"\nFiles processed: {len(wav_files):,}")
+    print(f"\nFiles processed: {len(input_files) - failed:,}")
+    print(f"Failed files:    {failed:,}")
     print(f"Total pulses:    {total_pulses:,}")
 
     print("\nCumulative processing time:")
@@ -282,6 +320,7 @@ def main():
 
     labels = {
         "read_wav": "Reading WAV files",
+        "read_zc": "Reading ZC files",
         "denoising": "Denoising",
         "zc_extraction": "Zero-crossing extraction",
         "local_linearity": "Local linearity calculation",
